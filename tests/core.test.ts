@@ -7,9 +7,37 @@ import { Catalog } from "../src/server/catalog";
 import { Previews, MAX_FILE_BYTES } from "../src/server/previews";
 import { startServer } from "../src/server/server";
 import { deflateSync } from "node:zlib";
+import { MAX_PREVIEW_WINDOW, neighbors } from "../src/shared/prefetch";
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 async function indexed(path: string) { const catalog = new Catalog(); await catalog.scan(path, true); while (!catalog.status.done) await tick(); return catalog; }
+
+test("expanded preview window covers both directions without dropping boundary files", () => {
+  const items = Array.from({ length: 100 }, (_, i) => i);
+  expect(neighbors(items, 50)).toHaveLength(MAX_PREVIEW_WINDOW);
+  expect(neighbors(items, 50).slice(0, 5)).toEqual([50, 51, 49, 52, 48]);
+  expect(new Set(neighbors(items, 50)).size).toBe(MAX_PREVIEW_WINDOW);
+  expect(neighbors(items, 0)).toEqual(items.slice(0, 21));
+  expect(neighbors(items, 99)).toEqual(items.slice(79).reverse());
+  expect(neighbors([], 0)).toEqual([]);
+});
+
+test("native drag endpoint validates the catalog ID and passes the actual file path to the bridge", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fast-files-drag-"));
+  let dragged: string | undefined;
+  const app = startServer({ webRoot: resolve("dist/web"), helper: "missing", armDrag: path => dragged = path });
+  try {
+    await writeFile(join(root, "example file.txt"), "Drop this file");
+    await app.catalog.scan(root, false); while (!app.catalog.status.done) await tick();
+    const endpoint = app.url.split("#")[0] + "api/drag";
+    const headers = { Authorization: `Bearer ${app.token}`, "Content-Type": "application/json" };
+    const invalid = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ id: "/etc/passwd" }) });
+    expect(invalid.status).toBe(400); expect(dragged).toBeUndefined();
+    const file = app.catalog.files[0];
+    const valid = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ id: file.id }) });
+    expect(valid.status).toBe(200); expect(dragged).toBe(file.path);
+  } finally { app.server.stop(true); await rm(root, { recursive: true, force: true }); }
+});
 
 test("admission obeys total bytes, deduplicates jobs, and prioritizes newly freed slots", async () => {
   const queue = new WorkQueue(100, 3); const order: string[] = [];

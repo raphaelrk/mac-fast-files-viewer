@@ -1,4 +1,5 @@
 import type { FileEntry, Preview, ScanStatus } from "../shared/types";
+import { neighbors, BROWSER_CACHE_BYTES } from "../shared/prefetch";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const list = $("list"), rows = $("rows"), folder = $<HTMLInputElement>("folder"), search = $<HTMLInputElement>("search");
@@ -8,6 +9,7 @@ history.replaceState(null, "", location.pathname);
 const ROW = 92;
 let files: FileEntry[] = [], filtered: FileEntry[] = [], active: FileEntry | undefined;
 let root = "", generation = "", cursor = 0, pinned = false, nativePicker = false;
+let nativeDrag = false;
 let scanSerial = 0, paintFrame = 0, windowTimer: ReturnType<typeof setTimeout>;
 let paintFallback: ReturnType<typeof setTimeout>;
 let pointer: { x: number; y: number } | undefined;
@@ -51,7 +53,7 @@ async function load(file: FileEntry, side: number): Promise<Cached> {
     const item = { preview, blob, image, bytes };
     if (file.id.startsWith(generation + ":")) {
       cache.set(key, item); cacheBytes += bytes;
-      while (cacheBytes > 128 * 1024 ** 2 && cache.size > 1) {
+      while (cacheBytes > BROWSER_CACHE_BYTES && cache.size > 1) {
         const oldest = cache.keys().next().value!, removed = cache.get(oldest)!;
         cache.delete(oldest); cacheBytes -= removed.bytes;
         if (removed.blob) URL.revokeObjectURL(removed.blob);
@@ -86,7 +88,19 @@ function row(file: FileEntry, index: number) {
   element.querySelector(".file-size")!.textContent = size(file.size);
   element.style.top = `${index * ROW}px`;
   element.addEventListener("mouseenter", () => { if (!pinned) select(file); });
-  element.addEventListener("click", () => { select(file); list.focus({ preventScroll: true }); });
+  element.addEventListener("click", () => {
+    if (pinned && active?.id === file.id) clearSelection();
+    else { select(file); setPinned(true); }
+    list.focus({ preventScroll: true });
+  });
+  element.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || !nativeDrag) return;
+    // Arm AppKit before the pointer moves; the native mouse-drag event starts
+    // the session, so HTML URL/text dragging is never substituted for a file.
+    void api("/api/drag", { id: file.id }).catch(error => toast(error.message));
+  });
+  element.addEventListener("dragstart", event => event.preventDefault());
+  element.title = "Click to select; click again to clear. Drag to another app in the desktop version.";
   return element;
 }
 function paint() {
@@ -103,6 +117,7 @@ function paint() {
     if (!element) { element = row(file, i); rendered.set(file.id, element); rows.append(element); }
     element.style.top = `${i * ROW}px`;
     element.classList.toggle("active", file.id === active?.id);
+    element.classList.toggle("locked", pinned && file.id === active?.id);
     element.setAttribute("aria-selected", String(file.id === active?.id));
     element.querySelector(".filename")!.textContent = `${saved.has(file.path) ? "★ " : ""}${file.name}`;
     const cached = touch(`${file.id}/240`);
@@ -135,6 +150,7 @@ let selectionVersion = 0;
 function select(file: FileEntry) {
   if (active?.id === file.id) return;
   active = file; const version = ++selectionVersion;
+  $("clear-selection").hidden = false;
   $("details").hidden = false; $("name").textContent = file.name; $("path").textContent = file.path;
   $("detail-kind").textContent = `${file.extension.toUpperCase() || "Unknown"} ${file.kind === "image" ? "image" : "file"}`;
   $("detail-size").textContent = size(file.size); $("detail-modified").textContent = date(file.modified); $("detail-created").textContent = date(file.created);
@@ -164,8 +180,8 @@ async function prefetch() {
     if (filtered[last - 1 + distance]) thumbs.push(filtered[last - 1 + distance]);
     if (filtered[first - distance]) thumbs.push(filtered[first - distance]);
   }
-  const index = active ? filtered.findIndex(file => file.id === active!.id) : -1;
-  const large = index >= 0 ? [filtered[index], ...[1, -1, 2, -2, 3, -3].map(offset => filtered[index + offset]).filter(Boolean)] : [];
+  const index = active ? filtered.findIndex(file => file.id === active!.id) : first;
+  const large = neighbors(filtered, index);
   const version = ++workVersion;
   desired = [];
   try { await api("/api/window", { thumbnails: thumbs.map(f => f.id), large: large.map(f => f.id), active: active?.id, revision: version, generation }); }
@@ -175,7 +191,12 @@ async function prefetch() {
     const selected = active, selection = selectionVersion;
     void load(selected, 1600).then(item => { if (selection === selectionVersion) showPreview(item); }).catch(() => {});
   }
-  desired = [...thumbs.map(file => ({ file, side: 240 })), ...large.map(file => ({ file, side: 1600 }))];
+  // Warm the large images early instead of putting them behind 100 icons.
+  desired = [];
+  for (let i = 0; i < Math.max(thumbs.length, large.length); i++) {
+    if (large[i]) desired.push({ file: large[i], side: 1600 });
+    if (thumbs[i]) desired.push({ file: thumbs[i], side: 240 });
+  }
   runLoads();
 }
 function hoverUnderPointer() {
@@ -197,6 +218,7 @@ function applyFilter(reset = true) {
   if (reset) list.scrollTop = 0;
   $("file-count").textContent = `${filtered.length.toLocaleString()} of ${files.length.toLocaleString()} files`;
   if (!active || !filtered.some(file => file.id === active!.id)) {
+    setPinned(false);
     active = undefined; selectionVersion++;
     if (filtered.length) select(filtered[0]); else { $("details").hidden = true; $("preview").replaceChildren(); }
   }
@@ -211,7 +233,7 @@ async function openFolder(path: string) {
   try {
     const status = await api<ScanStatus>("/api/open", { path: path.trim(), recursive: $<HTMLInputElement>("recursive").checked });
     if (serial !== scanSerial) return;
-    generation = status.generation; root = status.root; folder.value = root; files = []; filtered = []; cursor = 0; active = undefined;
+    generation = status.generation; root = status.root; folder.value = root; files = []; filtered = []; cursor = 0; active = undefined; setPinned(false);
     selectionVersion++; workVersion++; desired = []; clearCache(); rendered.clear(); rows.replaceChildren(); list.scrollTop = 0;
     $("scan-state").textContent = "Indexing…";
     while (serial === scanSerial) {
@@ -229,8 +251,22 @@ $("choose").addEventListener("click", async () => {
   if (!nativePicker) { folder.focus(); toast("Paste the absolute path of a folder, then press Enter."); return; }
   try { const { path } = await api("/api/pick", {}); if (path) await openFolder(path); } catch (error) { toast((error as Error).message); }
 });
-function togglePin() { pinned = !pinned; $("pin").textContent = pinned ? "◆ Preview frozen" : "◇ Live hover"; }
+function setPinned(value: boolean) {
+  pinned = value && Boolean(active);
+  $("pin").textContent = pinned ? "◆ Selected" : "◇ Hover preview";
+  $("pin").setAttribute("aria-pressed", String(pinned));
+  schedulePaint();
+}
+function clearSelection() {
+  active = undefined; selectionVersion++; setPinned(false); updateSaved();
+  $("details").hidden = true; $("clear-selection").hidden = true;
+  const message = document.createElement("p"); message.className = "preview-message";
+  message.textContent = "Hover to preview. Click a file to keep it selected.";
+  $("preview").replaceChildren(message); requestWindow();
+}
+function togglePin() { if (pinned) clearSelection(); else if (active) setPinned(true); }
 $("pin").addEventListener("click", togglePin); $("save").addEventListener("click", toggleSaved);
+$("clear-selection").addEventListener("click", clearSelection);
 $("reveal").addEventListener("click", () => { if (active) void api("/api/reveal", { id: active.id }).catch(error => toast(error.message)); });
 $("export").addEventListener("click", () => {
   const data = JSON.stringify({ exportedAt: new Date().toISOString(), files: [...saved.values()] }, null, 2);
@@ -245,7 +281,7 @@ document.addEventListener("keydown", event => {
   const direction = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
   if (direction && filtered.length) {
     event.preventDefault(); pointer = undefined;
-    const index = active ? filtered.findIndex(file => file.id === active!.id) : 0;
+    const index = active ? filtered.findIndex(file => file.id === active!.id) : direction > 0 ? -1 : filtered.length;
     const next = Math.max(0, Math.min(filtered.length - 1, index + direction)); select(filtered[next]);
     if (next * ROW < list.scrollTop) list.scrollTop = next * ROW;
     else if ((next + 1) * ROW > list.scrollTop + list.clientHeight) list.scrollTop = (next + 1) * ROW - list.clientHeight;
@@ -255,7 +291,7 @@ updateSaved();
 void api<FileEntry[]>("/api/shortlist").then(items => { for (const file of items) saved.set(file.path, file); updateSaved(); schedulePaint(); }).catch(() => {});
 async function poll() {
   try {
-    const status = await api("/api/status"); nativePicker = status.nativePicker;
+    const status = await api("/api/status"); nativePicker = status.nativePicker; nativeDrag = status.nativeDrag;
     $("reveal").hidden = !nativePicker;
     $("memory").textContent = `${status.queue.active} loading · ${status.queue.queued} queued · ${size(status.queue.cached)} cached`;
   } catch { /* server may be rebuilding */ }

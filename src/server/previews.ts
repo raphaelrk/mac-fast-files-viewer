@@ -40,8 +40,9 @@ export class Previews {
     // Submit current preview before speculative work.
     const large = active ? [active, ...previews.filter(id => id !== active)] : previews;
     if (active) void this.get(active, 1600, 0).catch(() => {});
-    thumbnails.forEach((id, i) => void this.get(id, 240, 5 + i).catch(() => {}));
-    large.filter(id => id !== active).forEach((id, i) => void this.get(id, 1600, 20 + i).catch(() => {}));
+    thumbnails.slice(0, 4).forEach((id, i) => void this.get(id, 240, 2 + i).catch(() => {}));
+    large.filter(id => id !== active).forEach((id, i) => void this.get(id, 1600, 5 + i).catch(() => {}));
+    thumbnails.slice(4).forEach((id, i) => void this.get(id, 240, 12 + i).catch(() => {}));
   }
   private async image(file: FileEntry, side: number): Promise<Asset> {
     if (!await Bun.file(this.helper).exists()) throw new Error("Image helper missing. Run bun run build:helper first.");
