@@ -16,6 +16,7 @@ export class Previews {
   async get(id: string, side: number, priority = 0): Promise<Asset> {
     const file = this.catalog.byId.get(id);
     if (!file) throw new Error("File no longer available");
+    if (file.kind === "folder") return { preview: { type: "folder" } };
     const key = this.key(id, side);
     const cached = this.cache.get(key);
     if (cached) return cached;

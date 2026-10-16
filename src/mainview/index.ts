@@ -1,21 +1,26 @@
 import type { FileEntry, Preview, ScanStatus } from "../shared/types";
 import { neighbors, BROWSER_CACHE_BYTES } from "../shared/prefetch";
+import { FileSelection } from "../shared/selection";
+import { compareFiles, type SortField } from "../shared/sort";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const list = $("list"), rows = $("rows"), folder = $<HTMLInputElement>("folder"), search = $<HTMLInputElement>("search");
+const quicklook = $<HTMLDialogElement>("quicklook");
 const token = location.hash.slice(1) || sessionStorage.getItem("fast-files-token") || "";
 sessionStorage.setItem("fast-files-token", token);
 history.replaceState(null, "", location.pathname);
 const ROW = 92;
-let files: FileEntry[] = [], filtered: FileEntry[] = [], active: FileEntry | undefined;
-let root = "", generation = "", cursor = 0, pinned = false, nativePicker = false;
-let nativeDrag = false;
-let scanSerial = 0, paintFrame = 0, windowTimer: ReturnType<typeof setTimeout>;
-let paintFallback: ReturnType<typeof setTimeout>;
-let pointer: { x: number; y: number } | undefined;
-const rendered = new Map<string, HTMLElement>();
-const saved = new Map<string, FileEntry>();
+let files: FileEntry[] = [], filtered: FileEntry[] = [], orderedIds: string[] = [], active: FileEntry | undefined;
+const byId = new Map<string, FileEntry>(), selection = new FileSelection();
+let root = "", parent = "", generation = "", cursor = 0;
+let nativePicker = false, nativeDrag = false, finderAvailable = false;
+let sortField: SortField = "modified", sortDirection: 1 | -1 = -1;
+let scanSerial = 0, paintFrame = 0, windowTimer: ReturnType<typeof setTimeout>, paintFallback: ReturnType<typeof setTimeout>;
+let selectionVersion = 0, pointer: { x: number; y: number } | undefined, contextFile: FileEntry | undefined;
+let press: { id: string; x: number; y: number; modified: boolean; moved: boolean } | undefined;
+const rendered = new Map<string, HTMLElement>(), saved = new Map<string, FileEntry>();
 let saveWork = Promise.resolve();
+const selectedFiles = () => [...selection.ids].map(id => byId.get(id)).filter((file): file is FileEntry => Boolean(file));
 
 async function api<T = any>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, { headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, method: body === undefined ? "GET" : "POST", body: body === undefined ? undefined : JSON.stringify(body) });
@@ -25,18 +30,18 @@ async function api<T = any>(path: string, body?: unknown): Promise<T> {
 }
 function toast(message: string) { $("toast").textContent = message; $("toast").hidden = false; setTimeout(() => $("toast").hidden = true, 5000); }
 const size = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 ** 2 ? `${(bytes / 1024).toFixed(0)} KiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
-const date = (value: number) => new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+const date = (value: number | null | undefined) => value == null ? "—" : new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+function clearTextSelection() { window.getSelection()?.removeAllRanges(); }
+function message(text: string) { const element = document.createElement("p"); element.className = "preview-message"; element.textContent = text; return element; }
 
-// A byte-counted browser cache accounts for decoded pixels as well as blobs.
+// Cache costs include decoded pixels, and retained images are decoded in advance.
 type Cached = { preview: Preview; blob?: string; image?: HTMLImageElement; bytes: number };
-const cache = new Map<string, Cached>();
+const cache = new Map<string, Cached>(), waiting = new Map<string, Promise<Cached>>();
 let cacheBytes = 0;
-const waiting = new Map<string, Promise<Cached>>();
 function clearCache() { for (const item of cache.values()) if (item.blob) URL.revokeObjectURL(item.blob); cache.clear(); cacheBytes = 0; }
 function touch(key: string) { const item = cache.get(key); if (item) { cache.delete(key); cache.set(key, item); } return item; }
 async function load(file: FileEntry, side: number): Promise<Cached> {
-  const key = `${file.id}/${side}`;
-  const hit = touch(key); if (hit) return hit;
+  const key = `${file.id}/${side}`, hit = touch(key); if (hit) return hit;
   const existing = waiting.get(key); if (existing) return existing;
   const work = (async () => {
     const preview = await api<Preview>(`/api/preview/${encodeURIComponent(file.id)}?side=${side}`);
@@ -45,7 +50,6 @@ async function load(file: FileEntry, side: number): Promise<Cached> {
       const response = await fetch(preview.url, { headers: { Authorization: `Bearer ${token}` } });
       if (!response.ok) throw new Error("Image no longer available");
       const data = await response.blob(); blob = URL.createObjectURL(data);
-      // Decode now, so nearby previews are already ready when selected.
       image = new Image(); image.src = blob;
       try { await image.decode(); } catch { URL.revokeObjectURL(blob); throw new Error("Could not display image"); }
       bytes = preview.width * preview.height * 4 + data.size;
@@ -64,51 +68,98 @@ async function load(file: FileEntry, side: number): Promise<Cached> {
   waiting.set(key, work);
   try { return await work; } finally { waiting.delete(key); }
 }
-
+function previewElement(item: Cached, file: FileEntry): HTMLElement {
+  if (item.blob) { const image = new Image(); image.src = item.blob; image.alt = file.name; image.draggable = false; return image; }
+  if (item.preview.type === "text") { const pre = document.createElement("pre"); pre.textContent = item.preview.text + (item.preview.truncated ? "\n\n[Preview limited to the first 64 KiB]" : ""); return pre; }
+  if (item.preview.type === "folder") {
+    const card = document.createElement("div"); card.className = "folder-preview";
+    const icon = document.createElement("span"); icon.textContent = "📁";
+    const button = document.createElement("button"); button.textContent = "Open folder"; button.onclick = () => void openFolder(file.path);
+    card.append(icon, button); return card;
+  }
+  return message(item.preview.type === "unavailable" ? item.preview.reason : "Preview unavailable");
+}
+function thumbnail(file: FileEntry) {
+  const item = touch(`${file.id}/240`), element = document.createElement("div"); element.className = "thumbnail";
+  element.setAttribute("aria-hidden", "true");
+  if (file.kind === "folder") { const icon = document.createElement("span"); icon.className = "folder-icon-large"; icon.textContent = "📁"; element.append(icon); }
+  else if (item?.blob) { const image = new Image(); image.src = item.blob; image.alt = ""; image.draggable = false; element.append(image); }
+  else if (item?.preview.type === "text") { const pre = document.createElement("pre"); pre.textContent = item.preview.text.slice(0, 600); element.append(pre); }
+  else { const ext = document.createElement("span"); ext.className = "ext"; ext.textContent = (file.extension || "FILE").slice(0, 8).toUpperCase(); element.append(ext); }
+  return element;
+}
 function updateSaved() {
   $("shortlist-count").textContent = String(saved.size);
-  $("save").textContent = active && saved.has(active.path) ? "★" : "☆";
+  const targets = selection.ids.size ? selectedFiles() : active ? [active] : [];
+  $("save").textContent = targets.length && targets.every(file => saved.has(file.path)) ? "★" : "☆";
 }
 function toggleSaved() {
-  if (!active) return;
-  if (saved.has(active.path)) saved.delete(active.path); else saved.set(active.path, active);
+  const targets = selection.ids.size ? selectedFiles() : active ? [active] : [];
+  if (!targets.length) return;
+  const remove = targets.every(file => saved.has(file.path));
+  for (const file of targets) { if (remove) saved.delete(file.path); else saved.set(file.path, file); }
   const snapshot = [...saved.values()];
   saveWork = saveWork.then(() => api("/api/shortlist", snapshot)).catch(error => toast(`Could not save shortlist: ${error.message}`));
   updateSaved(); applyFilter(false);
 }
+function selectionChanged(preferred?: FileEntry) {
+  if (selection.ids.size && (!preferred || !selection.ids.has(preferred.id))) preferred = selectedFiles().at(-1);
+  if (preferred) setActive(preferred, true); else refreshInspector();
+  schedulePaint(); requestWindow();
+}
+function clickFile(file: FileEntry, modifiers: { toggle?: boolean; range?: boolean } = {}) {
+  if (modifiers.range && !selection.anchor && active) selection.anchor = active.id;
+  selection.click(file.id, orderedIds, modifiers); selectionChanged(file);
+}
 function row(file: FileEntry, index: number) {
   const element = document.createElement("div"); element.className = "file-row"; element.dataset.id = file.id;
   element.setAttribute("role", "option"); element.id = `file-${file.id}`;
-  element.innerHTML = '<div class="thumbnail"><span class="ext"></span></div><div class="file-info"><div class="filename"></div><div class="filepath"></div></div><div class="file-date"></div><div class="file-size"></div>';
-  element.querySelector(".thumbnail")!.setAttribute("aria-hidden", "true");
-  element.querySelector(".ext")!.textContent = (file.extension || "txt").slice(0, 8).toUpperCase();
-  element.querySelector(".filename")!.textContent = `${saved.has(file.path) ? "★ " : ""}${file.name}`;
-  element.querySelector(".filepath")!.textContent = file.relativePath;
-  element.querySelector(".file-date")!.textContent = date(file.modified);
-  element.querySelector(".file-size")!.textContent = size(file.size);
+  const info = document.createElement("div"); info.className = "file-info";
+  const name = document.createElement("div"); name.className = "filename";
+  const path = document.createElement("div"); path.className = "filepath"; path.textContent = file.relativePath;
+  info.append(name, path); element.append(thumbnail(file), info);
+  for (const [field, value] of [["modified", date(file.modified)], ["created", date(file.created)], ["added", date(file.added)], ["size", file.kind === "folder" ? "—" : size(file.size)], ["kind", file.kindLabel]] as const) {
+    const cell = document.createElement("div"); cell.className = `file-${field}`; cell.textContent = value; cell.title = value; element.append(cell);
+  }
   element.style.top = `${index * ROW}px`;
-  element.addEventListener("mouseenter", () => { if (!pinned) select(file); });
-  element.addEventListener("click", () => {
-    if (pinned && active?.id === file.id) clearSelection();
-    else { select(file); setPinned(true); }
-    list.focus({ preventScroll: true });
-  });
+  element.addEventListener("mouseenter", () => { if (!selection.ids.size && !quicklook.open) setActive(file); });
   element.addEventListener("pointerdown", event => {
-    if (event.button !== 0 || !nativeDrag) return;
-    // Arm AppKit before the pointer moves; the native mouse-drag event starts
-    // the session, so HTML URL/text dragging is never substituted for a file.
-    void api("/api/drag", { id: file.id }).catch(error => toast(error.message));
+    if (event.button !== 0) return;
+    clearTextSelection();
+    list.focus({ preventScroll: true });
+    const modified = event.metaKey || event.ctrlKey || event.shiftKey;
+    press = { id: file.id, x: event.clientX, y: event.clientY, modified, moved: false };
+    if (modified) clickFile(file, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey });
+    else if (!selection.ids.has(file.id)) clickFile(file);
+    // Preserve a selected group until mouse-up, so any selected row drags it.
+    if (nativeDrag) void api("/api/drag", { ids: selection.dragIds(file.id, orderedIds) }).catch(error => toast(error.message));
   });
+  element.addEventListener("mousedown", event => { if (event.button === 0) event.preventDefault(); });
+  element.addEventListener("click", event => {
+    const previous = press; press = undefined;
+    list.focus({ preventScroll: true });
+    if (previous?.id === file.id && (previous.modified || previous.moved)) return;
+    clickFile(file, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey });
+  });
+  element.addEventListener("dblclick", event => { event.preventDefault(); clearTextSelection(); if (file.kind === "folder") void openFolder(file.path); });
   element.addEventListener("dragstart", event => event.preventDefault());
-  element.title = "Click to select; click again to clear. Drag to another app in the desktop version.";
+  element.addEventListener("contextmenu", event => {
+    event.preventDefault(); clearTextSelection();
+    if (!selection.ids.has(file.id)) clickFile(file);
+    contextFile = file;
+    const menu = $("context-menu"); menu.hidden = false;
+    menu.style.left = `${Math.min(event.clientX, innerWidth - 195)}px`; menu.style.top = `${Math.min(event.clientY, innerHeight - 55)}px`;
+    $<HTMLButtonElement>("context-reveal").disabled = !finderAvailable;
+    $("context-reveal").focus({ preventScroll: true });
+  });
+  element.title = "Click to select; ⌘-click to toggle; Shift-click for a range. Drag selected items to another app.";
   return element;
 }
 function paint() {
-  cancelAnimationFrame(paintFrame); clearTimeout(paintFallback);
-  paintFrame = 0;
+  cancelAnimationFrame(paintFrame); clearTimeout(paintFallback); paintFrame = 0;
   rows.style.height = `${filtered.length * ROW}px`;
   $("empty").hidden = filtered.length > 0;
-  if (!filtered.length && root) { $("empty").querySelector("h1")!.textContent = "No matching files"; $("empty").querySelector("p")!.textContent = "Try changing your filter or opening another folder."; }
+  if (!filtered.length && root) { $("empty").querySelector("h1")!.textContent = "No matching items"; $("empty").querySelector("p")!.textContent = "Try changing your filter or opening another folder."; }
   const first = Math.max(0, Math.floor(list.scrollTop / ROW) - 4), last = Math.min(filtered.length, Math.ceil((list.scrollTop + list.clientHeight) / ROW) + 4);
   const visible = new Set(filtered.slice(first, last).map(file => file.id));
   for (const [id, element] of rendered) if (!visible.has(id)) { element.remove(); rendered.delete(id); }
@@ -117,57 +168,85 @@ function paint() {
     if (!element) { element = row(file, i); rendered.set(file.id, element); rows.append(element); }
     element.style.top = `${i * ROW}px`;
     element.classList.toggle("active", file.id === active?.id);
-    element.classList.toggle("locked", pinned && file.id === active?.id);
-    element.setAttribute("aria-selected", String(file.id === active?.id));
+    element.classList.toggle("locked", selection.ids.has(file.id));
+    element.setAttribute("aria-selected", String(selection.ids.has(file.id)));
     element.querySelector(".filename")!.textContent = `${saved.has(file.path) ? "★ " : ""}${file.name}`;
     const cached = touch(`${file.id}/240`);
-    if (cached && element.dataset.preview !== `${file.id}/240`) {
-      const thumb = element.querySelector(".thumbnail")!; thumb.replaceChildren();
-      if (cached.blob) { const img = new Image(); img.src = cached.blob; img.alt = ""; thumb.append(img); }
-      else if (cached.preview.type === "text") { const pre = document.createElement("pre"); pre.textContent = cached.preview.text.slice(0, 600); thumb.append(pre); }
-      else { const ext = document.createElement("span"); ext.className = "ext"; ext.textContent = (file.extension || "FILE").toUpperCase(); thumb.append(ext); }
-      element.dataset.preview = `${file.id}/240`;
-    }
+    if (cached && element.dataset.preview !== `${file.id}/240`) { element.firstElementChild!.replaceWith(thumbnail(file)); element.dataset.preview = `${file.id}/240`; }
   }
+  if (selection.ids.size > 1) renderGroup();
 }
-function schedulePaint() {
-  if (!paintFrame) {
-    paintFrame = requestAnimationFrame(paint);
-    // WKWebView can suspend animation frames for a background native window.
-    paintFallback = setTimeout(paint, 80);
+function schedulePaint() { if (!paintFrame) { paintFrame = requestAnimationFrame(paint); paintFallback = setTimeout(paint, 80); } }
+function renderGroup() {
+  const group = selectedFiles(), container = $("preview"); container.classList.add("multi-preview");
+  const grid = document.createElement("div"); grid.className = "selection-grid";
+  for (const file of group.slice(0, 24)) {
+    const card = document.createElement("button"); card.className = "selection-card"; card.title = file.name;
+    const label = document.createElement("span"); label.textContent = file.name;
+    card.append(thumbnail(file), label); card.onclick = () => { setActive(file); if (quicklook.open) renderQuickLook(); };
+    grid.append(card);
   }
+  container.replaceChildren(grid);
+  if (group.length > 24) container.append(message(`Showing 24 of ${group.length.toLocaleString()} selected items. All selected items are included when dragging.`));
 }
-function showPreview(item: Cached) {
-  const container = $("preview"); container.replaceChildren();
-  if (item.blob) { const image = new Image(); image.src = item.blob; image.alt = active?.name || "Preview"; container.append(image); }
-  else if (item.preview.type === "text") {
-    const pre = document.createElement("pre"); pre.textContent = item.preview.text + (item.preview.truncated ? "\n\n[Preview limited to the first 64 KiB]" : ""); container.append(pre);
-  } else if (item.preview.type === "unavailable") {
-    const message = document.createElement("p"); message.className = "preview-message"; message.textContent = item.preview.reason; container.append(message);
+function refreshInspector() {
+  const group = selectedFiles(), multi = group.length > 1;
+  $("selection-status").textContent = group.length ? `${group.length.toLocaleString()} selected` : "Hover preview";
+  $("clear-selection").hidden = !active && !group.length;
+  $("details").hidden = !active && !group.length;
+  updateSaved();
+  if (!active) { $("preview").classList.remove("multi-preview"); $("preview").replaceChildren(message("Hover to preview. Click to select; ⌘-click or Shift-click for more.")); return; }
+  $("name").textContent = multi ? `${group.length.toLocaleString()} items selected` : active.name;
+  $("path").textContent = multi ? "Drag any selected row to use the entire selection." : active.path;
+  $("detail-kind").textContent = multi ? `${group.filter(file => file.kind === "folder").length} folders · ${group.filter(file => file.kind !== "folder").length} files` : active.kindLabel;
+  $("detail-size").textContent = multi ? size(group.reduce((total, file) => total + (file.kind === "folder" ? 0 : file.size), 0)) : active.kind === "folder" ? "—" : size(active.size);
+  for (const field of ["modified", "created", "added"] as const) $(`detail-${field}`).textContent = multi ? "—" : date(active[field]);
+  if (multi) renderGroup();
+  else {
+    const file = active, version = selectionVersion;
+    $("preview").classList.remove("multi-preview");
+    const cached = touch(`${file.id}/1600`) || touch(`${file.id}/240`);
+    $("preview").replaceChildren(cached ? previewElement(cached, file) : file.kind === "folder" ? previewElement({ preview: { type: "folder" }, bytes: 0 }, file) : message("Loading preview…"));
+    void load(file, 1600).then(item => { if (version === selectionVersion && selection.ids.size <= 1) $("preview").replaceChildren(previewElement(item, file)); if (version === selectionVersion && quicklook.open) renderQuickLook(); }).catch(error => { if (version === selectionVersion && error.message !== "Superseded") $("preview").replaceChildren(message(error.message)); });
   }
+  if (quicklook.open) renderQuickLook();
 }
-let selectionVersion = 0;
-function select(file: FileEntry) {
-  if (active?.id === file.id) return;
-  active = file; const version = ++selectionVersion;
-  $("clear-selection").hidden = false;
-  $("details").hidden = false; $("name").textContent = file.name; $("path").textContent = file.path;
-  $("detail-kind").textContent = `${file.extension.toUpperCase() || "Unknown"} ${file.kind === "image" ? "image" : "file"}`;
-  $("detail-size").textContent = size(file.size); $("detail-modified").textContent = date(file.modified); $("detail-created").textContent = date(file.created);
-  updateSaved(); schedulePaint();
-  const hit = touch(`${file.id}/1600`);
-  if (hit) showPreview(hit); else {
-    $("preview").replaceChildren(); const message = document.createElement("p"); message.className = "preview-message"; message.textContent = "Loading preview…"; $("preview").append(message);
-    void load(file, 1600).then(item => { if (version === selectionVersion) showPreview(item); }).catch(error => { if (version === selectionVersion && error.message !== "Superseded") { $("preview").textContent = error.message; } });
-  }
-  requestWindow();
+function setActive(file: FileEntry, force = false) {
+  if (!force && active?.id === file.id) return;
+  active = file; selectionVersion++; refreshInspector(); schedulePaint(); requestWindow();
+}
+function clearSelection() {
+  selection.clear(); active = undefined; selectionVersion++; clearTextSelection();
+  refreshInspector(); schedulePaint(); requestWindow(); closeQuickLook();
+}
+function renderQuickLook() {
+  if (!active || !quicklook.open) return;
+  const file = active, version = selectionVersion, sequence = selection.ids.size > 1 ? selectedFiles() : filtered;
+  $("quicklook-title").textContent = file.name;
+  $("quicklook-count").textContent = `${Math.max(0, sequence.findIndex(item => item.id === file.id)) + 1} of ${sequence.length.toLocaleString()}`;
+  const item = touch(`${file.id}/1600`) || touch(`${file.id}/240`);
+  $("quicklook-content").replaceChildren(item ? previewElement(item, file) : file.kind === "folder" ? previewElement({ preview: { type: "folder" }, bytes: 0 }, file) : message("Loading preview…"));
+  if (!touch(`${file.id}/1600`)) void load(file, 1600).then(item => { if (quicklook.open && selectionVersion === version) $("quicklook-content").replaceChildren(previewElement(item, file)); }).catch(() => {});
+}
+function toggleQuickLook() {
+  if (quicklook.open) { closeQuickLook(); return; }
+  if (!active && filtered.length) setActive(filtered[0]);
+  if (!active) return;
+  // Open synchronously, then reuse the decoded cache or thumbnail immediately.
+  quicklook.showModal(); renderQuickLook();
+}
+function closeQuickLook() { if (quicklook.open) { quicklook.close(); list.focus({ preventScroll: true }); } }
+function stepQuickLook(direction: number) {
+  const sequence = selection.ids.size > 1 ? selectedFiles() : filtered;
+  const index = sequence.findIndex(file => file.id === active?.id);
+  const file = sequence[Math.max(0, Math.min(sequence.length - 1, index + direction))];
+  if (file) { if (selection.ids.size === 1) selection.click(file.id, orderedIds); setActive(file, true); }
 }
 
 let workVersion = 0, desired: { file: FileEntry; side: number }[] = [], workers = 0;
 function runLoads() {
   while (workers < 4 && desired.length) {
-    const { file, side } = desired.shift()!;
-    if (cache.has(`${file.id}/${side}`)) continue;
+    const { file, side } = desired.shift()!; if (cache.has(`${file.id}/${side}`)) continue;
     workers++; const version = workVersion;
     void load(file, side).then(() => { if (version === workVersion) schedulePaint(); }).catch(() => {}).finally(() => { workers--; runLoads(); });
   }
@@ -175,124 +254,136 @@ function runLoads() {
 function requestWindow() { clearTimeout(windowTimer); windowTimer = setTimeout(() => void prefetch(), 45); }
 async function prefetch() {
   const first = Math.floor(list.scrollTop / ROW), last = Math.min(filtered.length, Math.ceil((list.scrollTop + list.clientHeight) / ROW));
-  const thumbs = filtered.slice(first, last);
-  for (let distance = 1; distance <= 50; distance++) {
-    if (filtered[last - 1 + distance]) thumbs.push(filtered[last - 1 + distance]);
-    if (filtered[first - distance]) thumbs.push(filtered[first - distance]);
-  }
-  const index = active ? filtered.findIndex(file => file.id === active!.id) : first;
-  const large = neighbors(filtered, index);
-  const version = ++workVersion;
-  desired = [];
-  try { await api("/api/window", { thumbnails: thumbs.map(f => f.id), large: large.map(f => f.id), active: active?.id, revision: version, generation }); }
-  catch { return; }
+  const thumbs = [...filtered.slice(first, last), ...selectedFiles().slice(0, 24)];
+  for (let distance = 1; distance <= 50; distance++) { if (filtered[last - 1 + distance]) thumbs.push(filtered[last - 1 + distance]); if (filtered[first - distance]) thumbs.push(filtered[first - distance]); }
+  const thumbnails = [...new Map(thumbs.filter(file => file.kind !== "folder").map(file => [file.id, file])).values()];
+  const large = neighbors(filtered, active ? filtered.findIndex(file => file.id === active!.id) : first).filter(file => file.kind !== "folder");
+  const version = ++workVersion; desired = [];
+  try { await api("/api/window", { thumbnails: thumbnails.map(f => f.id), large: large.map(f => f.id), active: active?.kind !== "folder" ? active?.id : undefined, revision: version, generation }); } catch { return; }
   if (version !== workVersion) return;
-  if (active) {
-    const selected = active, selection = selectionVersion;
-    void load(selected, 1600).then(item => { if (selection === selectionVersion) showPreview(item); }).catch(() => {});
+  if (active && selection.ids.size <= 1) {
+    const file = active, selectedVersion = selectionVersion;
+    void load(file, 1600).then(item => { if (selectedVersion === selectionVersion && selection.ids.size <= 1) { $("preview").replaceChildren(previewElement(item, file)); if (quicklook.open) renderQuickLook(); } }).catch(() => {});
   }
-  // Warm the large images early instead of putting them behind 100 icons.
-  desired = [];
-  for (let i = 0; i < Math.max(thumbs.length, large.length); i++) {
-    if (large[i]) desired.push({ file: large[i], side: 1600 });
-    if (thumbs[i]) desired.push({ file: thumbs[i], side: 240 });
-  }
+  for (let i = 0; i < Math.max(thumbnails.length, large.length); i++) { if (large[i]) desired.push({ file: large[i], side: 1600 }); if (thumbnails[i]) desired.push({ file: thumbnails[i], side: 240 }); }
   runLoads();
 }
 function hoverUnderPointer() {
-  if (!pointer || pinned) return;
+  if (!pointer || selection.ids.size || quicklook.open) return;
   const bounds = list.getBoundingClientRect();
   if (pointer.x < bounds.left || pointer.x >= bounds.right || pointer.y < bounds.top || pointer.y >= bounds.bottom) return;
-  const file = filtered[Math.floor((pointer.y - bounds.top + list.scrollTop) / ROW)];
-  if (file) select(file);
+  const file = filtered[Math.floor((pointer.y - bounds.top + list.scrollTop) / ROW)]; if (file) setActive(file);
 }
 list.addEventListener("mousemove", event => { pointer = { x: event.clientX, y: event.clientY }; hoverUnderPointer(); });
 list.addEventListener("mouseleave", () => pointer = undefined);
-list.addEventListener("scroll", () => { schedulePaint(); hoverUnderPointer(); requestWindow(); }, { passive: true });
+list.addEventListener("scroll", () => { $("column-track").style.transform = `translateX(${-list.scrollLeft}px)`; $("context-menu").hidden = true; schedulePaint(); hoverUnderPointer(); requestWindow(); }, { passive: true });
 new ResizeObserver(() => { schedulePaint(); requestWindow(); }).observe(list);
-
+document.addEventListener("pointermove", event => { if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5) press.moved = true; }, { passive: true });
+document.addEventListener("mousedown", event => {
+  const target = event.target as HTMLElement;
+  if (!target.closest("input,textarea,[contenteditable=true],#preview,#details,#quicklook-content,#quicklook-title")) clearTextSelection();
+  if (!target.closest("#context-menu")) $("context-menu").hidden = true;
+});
 function applyFilter(reset = true) {
-  const query = search.value.toLocaleLowerCase(), kind = $<HTMLSelectElement>("kind").value, sort = $<HTMLSelectElement>("sort").value;
+  const query = search.value.toLocaleLowerCase(), kind = $<HTMLSelectElement>("kind").value;
   filtered = files.filter(file => (!query || file.relativePath.toLocaleLowerCase().includes(query)) && (kind === "all" || kind === file.kind || kind === "saved" && saved.has(file.path)));
-  filtered.sort((a, b) => sort === "name" ? a.name.localeCompare(b.name) : sort === "size" ? b.size - a.size : sort === "oldest" ? a.modified - b.modified : b.modified - a.modified);
+  filtered.sort((a, b) => compareFiles(a, b, sortField, sortDirection)); orderedIds = filtered.map(file => file.id);
+  selection.retain(new Set(orderedIds));
   if (reset) list.scrollTop = 0;
-  $("file-count").textContent = `${filtered.length.toLocaleString()} of ${files.length.toLocaleString()} files`;
-  if (!active || !filtered.some(file => file.id === active!.id)) {
-    setPinned(false);
-    active = undefined; selectionVersion++;
-    if (filtered.length) select(filtered[0]); else { $("details").hidden = true; $("preview").replaceChildren(); }
-  }
+  $("file-count").textContent = `${filtered.length.toLocaleString()} of ${files.length.toLocaleString()} items`;
+  if (!active || !filtered.some(file => file.id === active!.id)) { active = undefined; selectionVersion++; if (selection.ids.size) setActive(selectedFiles().at(-1)!, true); else if (filtered.length) setActive(filtered[0]); else refreshInspector(); }
+  else refreshInspector();
   schedulePaint(); requestWindow();
+}
+function changeSort(field: SortField, reverse = false) {
+  sortDirection = reverse ? sortDirection === 1 ? -1 : 1 : field === "name" || field === "kind" ? 1 : -1;
+  sortField = field; $<HTMLSelectElement>("sort").value = field;
+  $("sort-direction").textContent = sortDirection === 1 ? "↑" : "↓";
+  document.querySelectorAll<HTMLButtonElement>("[data-sort]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.sort === field)));
+  applyFilter();
 }
 let filterTimer: ReturnType<typeof setTimeout>;
 search.addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(() => applyFilter(), 100); });
-$("kind").addEventListener("change", () => applyFilter()); $("sort").addEventListener("change", () => applyFilter());
-async function openFolder(path: string) {
+$("kind").addEventListener("change", () => applyFilter());
+$("sort").addEventListener("change", () => changeSort($<HTMLSelectElement>("sort").value as SortField));
+$("sort-direction").addEventListener("click", () => changeSort(sortField, true));
+document.querySelectorAll<HTMLButtonElement>("[data-sort]").forEach(button => button.onclick = () => changeSort(button.dataset.sort as SortField, button.dataset.sort === sortField));
+async function openFolder(path: string, focusPath?: string) {
   if (!path.trim()) return;
   const serial = ++scanSerial;
   try {
     const status = await api<ScanStatus>("/api/open", { path: path.trim(), recursive: $<HTMLInputElement>("recursive").checked });
     if (serial !== scanSerial) return;
-    generation = status.generation; root = status.root; folder.value = root; files = []; filtered = []; cursor = 0; active = undefined; setPinned(false);
-    selectionVersion++; workVersion++; desired = []; clearCache(); rendered.clear(); rows.replaceChildren(); list.scrollTop = 0;
+    closeQuickLook(); clearTextSelection(); $("context-menu").hidden = true;
+    if (status.root !== root) search.value = "";
+    generation = status.generation; root = status.root; parent = status.parent; folder.value = root;
+    files = []; filtered = []; orderedIds = []; byId.clear(); selection.clear(); cursor = 0; active = undefined;
+    selectionVersion++; workVersion++; desired = []; clearCache(); rendered.clear(); rows.replaceChildren(); list.scrollTop = list.scrollLeft = 0;
+    $<HTMLButtonElement>("up").disabled = root === parent; $<HTMLButtonElement>("finder-folder").disabled = !finderAvailable;
     $("scan-state").textContent = "Indexing…";
     while (serial === scanSerial) {
       const page = await api<{ files: FileEntry[]; status: ScanStatus }>(`/api/files?generation=${generation}&offset=${cursor}`);
       if (serial !== scanSerial) return;
-      files.push(...page.files); cursor += page.files.length; applyFilter(false);
+      files.push(...page.files); page.files.forEach(file => byId.set(file.id, file)); cursor += page.files.length; applyFilter(false);
       $("scan-state").textContent = page.status.done ? `Indexed · ${page.status.skipped} unreadable` : "Indexing…";
       if (page.status.done && cursor >= page.status.count) break;
       if (page.files.length < 4000) await new Promise(resolve => setTimeout(resolve, 150));
     }
+    if (focusPath && serial === scanSerial) { const file = filtered.find(file => file.path === focusPath); if (file) { clickFile(file); ensureVisible(file); } }
   } catch (error) { toast((error as Error).message); $("scan-state").textContent = "Could not load folder"; }
 }
+function goUp() { if (root && parent && parent !== root) void openFolder(parent, root); }
+function ensureVisible(file: FileEntry) {
+  const index = filtered.findIndex(item => item.id === file.id);
+  if (index < 0) return;
+  if (index * ROW < list.scrollTop) list.scrollTop = index * ROW;
+  else if ((index + 1) * ROW > list.scrollTop + list.clientHeight) list.scrollTop = (index + 1) * ROW - list.clientHeight;
+}
 $("folder-form").addEventListener("submit", event => { event.preventDefault(); void openFolder(folder.value); });
+$("recursive").addEventListener("change", () => { if (root) void openFolder(root); });
+$("up").addEventListener("click", goUp);
+$("finder-folder").addEventListener("click", () => void api("/api/finder-folder", {}).catch(error => toast(error.message)));
 $("choose").addEventListener("click", async () => {
   if (!nativePicker) { folder.focus(); toast("Paste the absolute path of a folder, then press Enter."); return; }
   try { const { path } = await api("/api/pick", {}); if (path) await openFolder(path); } catch (error) { toast((error as Error).message); }
 });
-function setPinned(value: boolean) {
-  pinned = value && Boolean(active);
-  $("pin").textContent = pinned ? "◆ Selected" : "◇ Hover preview";
-  $("pin").setAttribute("aria-pressed", String(pinned));
-  schedulePaint();
-}
-function clearSelection() {
-  active = undefined; selectionVersion++; setPinned(false); updateSaved();
-  $("details").hidden = true; $("clear-selection").hidden = true;
-  const message = document.createElement("p"); message.className = "preview-message";
-  message.textContent = "Hover to preview. Click a file to keep it selected.";
-  $("preview").replaceChildren(message); requestWindow();
-}
-function togglePin() { if (pinned) clearSelection(); else if (active) setPinned(true); }
-$("pin").addEventListener("click", togglePin); $("save").addEventListener("click", toggleSaved);
-$("clear-selection").addEventListener("click", clearSelection);
+$("save").addEventListener("click", toggleSaved); $("clear-selection").addEventListener("click", clearSelection);
 $("reveal").addEventListener("click", () => { if (active) void api("/api/reveal", { id: active.id }).catch(error => toast(error.message)); });
+$("context-reveal").addEventListener("click", () => { $("context-menu").hidden = true; if (contextFile) void api("/api/reveal", { id: contextFile.id }).catch(error => toast(error.message)); });
+$("quicklook-close").addEventListener("click", closeQuickLook);
+$("quicklook-prev").addEventListener("click", () => stepQuickLook(-1)); $("quicklook-next").addEventListener("click", () => stepQuickLook(1));
+quicklook.addEventListener("click", event => { if (event.target === quicklook) { const rect = quicklook.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeQuickLook(); } });
 $("export").addEventListener("click", () => {
-  const data = JSON.stringify({ exportedAt: new Date().toISOString(), files: [...saved.values()] }, null, 2);
-  const url = URL.createObjectURL(new Blob([data], { type: "application/json" }));
+  const url = URL.createObjectURL(new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), files: [...saved.values()] }, null, 2)], { type: "application/json" }));
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = "fast-files-shortlist.json"; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 5000);
 });
 document.addEventListener("keydown", event => {
-  if ((event.metaKey || event.ctrlKey) && event.key === "o") { event.preventDefault(); $("choose").click(); return; }
-  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+  const target = event.target as HTMLElement, editable = target.matches("input,textarea,select") || target.isContentEditable;
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") { event.preventDefault(); $("choose").click(); return; }
+  if (editable) return;
+  if ((event.metaKey || event.ctrlKey) && event.key === "ArrowUp") { event.preventDefault(); goUp(); return; }
+  if (event.key === "Escape") { if (quicklook.open) { event.preventDefault(); closeQuickLook(); } else if (!$("context-menu").hidden) $("context-menu").hidden = true; else clearSelection(); return; }
+  if (event.code === "Space") { event.preventDefault(); if (!event.repeat) toggleQuickLook(); return; }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && (target === list || target.closest("#rows"))) { event.preventDefault(); selection.ids = new Set(orderedIds); selection.anchor = orderedIds[0]; selectionChanged(active || filtered[0]); return; }
   if (event.key === "s" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); toggleSaved(); }
-  if (event.code === "Space") { event.preventDefault(); togglePin(); }
+  if (event.key === "Enter" && active?.kind === "folder") { event.preventDefault(); void openFolder(active.path); return; }
+  if (quicklook.open && (event.key === "ArrowLeft" || event.key === "ArrowRight")) { event.preventDefault(); stepQuickLook(event.key === "ArrowLeft" ? -1 : 1); return; }
   const direction = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
   if (direction && filtered.length) {
     event.preventDefault(); pointer = undefined;
     const index = active ? filtered.findIndex(file => file.id === active!.id) : direction > 0 ? -1 : filtered.length;
-    const next = Math.max(0, Math.min(filtered.length - 1, index + direction)); select(filtered[next]);
-    if (next * ROW < list.scrollTop) list.scrollTop = next * ROW;
-    else if ((next + 1) * ROW > list.scrollTop + list.clientHeight) list.scrollTop = (next + 1) * ROW - list.clientHeight;
+    const file = filtered[Math.max(0, Math.min(filtered.length - 1, index + direction))];
+    if (event.shiftKey && !selection.anchor && active) selection.anchor = active.id;
+    selection.click(file.id, orderedIds, { range: event.shiftKey }); setActive(file, true); ensureVisible(file);
   }
 });
 updateSaved();
 void api<FileEntry[]>("/api/shortlist").then(items => { for (const file of items) saved.set(file.path, file); updateSaved(); schedulePaint(); }).catch(() => {});
 async function poll() {
   try {
-    const status = await api("/api/status"); nativePicker = status.nativePicker; nativeDrag = status.nativeDrag;
-    $("reveal").hidden = !nativePicker;
+    const status = await api("/api/status"); nativePicker = status.nativePicker; nativeDrag = status.nativeDrag; finderAvailable = status.finder;
+    $<HTMLButtonElement>("finder-folder").disabled = !finderAvailable || !root;
+    $<HTMLButtonElement>("reveal").disabled = !finderAvailable;
     $("memory").textContent = `${status.queue.active} loading · ${status.queue.queued} queued · ${size(status.queue.cached)} cached`;
   } catch { /* server may be rebuilding */ }
 }

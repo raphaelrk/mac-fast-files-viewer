@@ -13,24 +13,33 @@
     <button id="choose" class="primary">Open folder <kbd>⌘ O</kbd></button>
   </header>
   <section class="toolbar">
+    <button id="up" class="subtle" aria-label="Go to parent folder" title="Go to parent folder (⌘↑)" disabled>↑</button>
     <form id="folder-form"><span class="folder-icon">⌁</span><input id="folder" aria-label="Folder path" placeholder="Paste a folder path to start exploring…" autocomplete="off" spellcheck="false" /><button type="submit" class="subtle">Load</button></form>
-    <label class="check"><input type="checkbox" id="recursive" checked /> Include subfolders</label>
+    <button id="finder-folder" class="subtle" disabled>Open folder in Finder ↗</button>
+    <label class="check"><input type="checkbox" id="recursive" /> Include subfolders</label>
   </section>
   <main>
     <section class="browser" aria-label="File browser">
-      <div class="filters"><div class="search"><span>⌕</span><input id="search" type="search" aria-label="Filter files" placeholder="Filter by name or path" /></div><select id="kind" aria-label="File type"><option value="all">All files</option><option value="image">Images</option><option value="text">Text & other</option><option value="saved">Shortlist</option></select></div>
-      <div class="columns"><span>FILE</span><select id="sort" aria-label="Sort files"><option value="modified">Newest first</option><option value="oldest">Oldest first</option><option value="name">Name A–Z</option><option value="size">Largest first</option></select><span>SIZE</span></div>
-      <div id="list" tabindex="0" role="listbox" aria-label="Files"><div id="rows"></div><div id="empty"><span class="empty-icon">▧</span><h1>Your archive, at a glance.</h1><p>Open a folder. Skim the thumbnails.<br />Hover to see the details.</p><div class="empty-keys"><kbd>↑</kbd><kbd>↓</kbd> browse <kbd>S</kbd> shortlist</div></div></div>
+      <div class="filters">
+        <div class="search"><span>⌕</span><input id="search" type="search" aria-label="Filter files" placeholder="Filter by name or path" /></div>
+        <select id="kind" aria-label="File type"><option value="all">All items</option><option value="image">Images</option><option value="text">Text & other</option><option value="folder">Folders</option><option value="saved">Shortlist</option></select>
+        <select id="sort" aria-label="Sort files"><option value="modified">Date modified</option><option value="created">Date created</option><option value="added">Date added</option><option value="name">Name</option><option value="size">Size</option><option value="kind">Kind</option></select>
+        <button id="sort-direction" class="subtle" aria-label="Reverse sort direction" title="Reverse sort direction">↓</button>
+      </div>
+      <div class="columns"><div id="column-track"><button data-sort="name" class="name-column">NAME</button><button data-sort="modified">DATE MODIFIED</button><button data-sort="created">DATE CREATED</button><button data-sort="added">DATE ADDED</button><button data-sort="size">SIZE</button><button data-sort="kind">KIND</button></div></div>
+      <div id="list" tabindex="0" role="listbox" aria-label="Files" aria-multiselectable="true"><div id="rows"></div><div id="empty"><span class="empty-icon">▧</span><h1>Your archive, at a glance.</h1><p>Open a folder. Skim the thumbnails.<br />Hover to see the details.</p><div class="empty-keys"><kbd>↑</kbd><kbd>↓</kbd> browse <kbd>Space</kbd> Quick Look</div></div></div>
       <div class="list-footer"><span id="file-count">No folder open</span><span id="scan-state">Ready when you are</span></div>
     </section>
     <section class="inspector" aria-label="File preview">
-      <div class="preview-heading"><span>PREVIEW</span><div class="preview-actions"><button id="pin" class="subtle" aria-pressed="false" title="Keep this file selected (Space)">◇ Hover preview</button><button id="clear-selection" class="subtle" aria-label="Clear selection" title="Clear selection" hidden>×</button></div></div>
+      <div class="preview-heading"><span>PREVIEW</span><div class="preview-actions"><span id="selection-status">Hover preview</span><button id="clear-selection" class="subtle" aria-label="Clear selection" title="Clear all selected items" hidden>×</button></div></div>
       <div id="preview"><div class="preview-empty"><span>⌁</span><p>A little less waiting.<br />A lot more finding.</p></div></div>
-      <div id="details" hidden><div class="detail-title"><h2 id="name"></h2><button id="save" class="star" title="Toggle shortlist (S)">☆</button></div><p id="path"></p><dl><div><dt>Kind</dt><dd id="detail-kind"></dd></div><div><dt>Size</dt><dd id="detail-size"></dd></div><div><dt>Modified</dt><dd id="detail-modified"></dd></div><div><dt>Created</dt><dd id="detail-created"></dd></div></dl><button id="reveal" class="subtle">Reveal in Finder ↗</button></div>
+      <div id="details" hidden><div class="detail-title"><h2 id="name"></h2><button id="save" class="star" title="Toggle shortlist (S)">☆</button></div><p id="path"></p><dl><div><dt>Kind</dt><dd id="detail-kind"></dd></div><div><dt>Size</dt><dd id="detail-size"></dd></div><div><dt>Modified</dt><dd id="detail-modified"></dd></div><div><dt>Created</dt><dd id="detail-created"></dd></div><div><dt>Added</dt><dd id="detail-added"></dd></div></dl><button id="reveal" class="subtle">Open in Finder ↗</button></div>
       <div class="inspector-footer"><span class="live-dot"></span><span id="memory">Previews load around you</span></div>
     </section>
   </main>
-  <footer><span><kbd>↑</kbd> <kbd>↓</kbd> Browse <kbd>S</kbd> Shortlist <kbd>Space</kbd> Freeze preview</span><span>LOCAL FILES · NO UPLOADS</span></footer>
+  <footer><span><kbd>↑</kbd> <kbd>↓</kbd> Browse <kbd>⌘</kbd> / <kbd>Shift</kbd> Multi-select <kbd>Space</kbd> Quick Look <kbd>⌘↑</kbd> Parent folder</span><span>LOCAL FILES · NO UPLOADS</span></footer>
+  <div id="context-menu" role="menu" hidden><button id="context-reveal" role="menuitem">Open in Finder</button></div>
+  <dialog id="quicklook" aria-label="Quick Look"><div class="quicklook-header"><h2 id="quicklook-title">Quick Look</h2><span id="quicklook-count"></span><button id="quicklook-prev" aria-label="Previous preview">←</button><button id="quicklook-next" aria-label="Next preview">→</button><button id="quicklook-close" aria-label="Close Quick Look" title="Close (Space or Escape)">×</button></div><div id="quicklook-content"></div></dialog>
   <div id="toast" role="status" hidden></div>
   <script type="module" src="/index.js"></script>
 </body>

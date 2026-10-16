@@ -6,13 +6,15 @@ Uses a virtualized list, content thumbnails large enough to skim, and immediate 
 
 ## What works
 
-- Index names, paths, dates, and sizes without reading file contents.
+- Index files and folders with names, paths, sizes, modified/created/added dates, and Finder kind descriptions without reading file contents. Start in the current folder; optionally include all subfolders.
 - Render only visible rows; prefetch thumbnails for the viewport plus about 50 files in each direction.
 - Prefetch larger previews up to 20 files before and 20 after the active item, interleaved with thumbnail downloads.
 - Share a bounded, prioritized work queue across thumbnail and preview generation. Skip files over 250 MiB and budget 500 MiB for estimated in-flight image work.
 - Downsample JPEG, PNG, and GIF through macOS ImageIO; show bounded UTF-8 excerpts for text and code.
 - Support pointer hover, stationary-pointer scrolling, keyboard navigation, filtering, and a shortlist export.
 - Save a persistent shortlist and export its paths and metadata as JSON.
+- Select one or many items using normal click, ⌘-click, or Shift-click, then drag the originals into other apps. Keep text selection available in previews, metadata, and inputs.
+- Navigate folders, open them in Finder, and toggle an immediate, cached Quick Look overlay with Space.
 
 Embeddings, similarity groups, and peripheral-vision experiments are future work.
 
@@ -26,7 +28,7 @@ bun install --frozen-lockfile
 ~/.hutch/bin/hutch run dev
 ```
 
-The build hook compiles the small ImageIO helper when needed and bundles the webview. No global Electrobun npm package is required. Hutch manages its paired Bun runtime. The current generated SDK uses a TypeScript configuration supported by the pinned TypeScript 5.9.3.
+The build hook compiles the ImageIO, filesystem metadata, and AppKit drag helpers when needed and bundles the webview. No global Electrobun npm package is required. Hutch manages its paired Bun runtime. The current generated SDK uses a TypeScript configuration supported by the pinned TypeScript 5.9.3.
 
 For a browser-only development session using an existing Bun installation:
 
@@ -37,9 +39,15 @@ bun run dev
 
 Open the printed localhost URL and paste an absolute folder path. The native app also provides a macOS folder picker and Reveal in Finder. The localhost listener binds only to `127.0.0.1` and requires a per-session bearer token for file operations.
 
-Use **↑/↓** to browse, **S** to toggle shortlist, and **⌘O** to open a folder. Hover follows the row under the pointer during scrolling. Click a row to keep it selected while moving the pointer; click it again or use the preview's **×** to clear selection and return to hover. **Space** also toggles selection. Filtering searches names and relative paths. Sorting supports name, modified date, and size.
+Use **↑/↓** to browse from the current preview, **S** to toggle shortlist, **⌘O** to open a folder, and **⌘↑** to go to its parent. Double-click a folder or press Enter to enter it. **Include subfolders** switches between the default current-folder listing and a recursive scan.
 
-In the desktop app, drag a row into another app to offer the original file through a native macOS file-URL dragging session. It advertises copy/link operations; it does not move or delete source files. This uses a small AppKit bridge loaded into Electrobun. Native file dragging is unavailable in the browser development preview.
+Hover follows the row under the pointer during scrolling until items are selected. A normal click selects one item, **⌘-click** toggles individual items, and **Shift-click** selects a range. Another normal click collapses a group to one item. Use the preview's **×** or Escape to clear all selection and resume hover. **⌘A** selects the filtered list when it has keyboard focus.
+
+**Space** immediately opens or closes an in-app Quick Look overlay, reusing the cached image or thumbnail while a larger preview loads. Use its arrows to browse; Escape also dismisses it. This overlay uses the app's supported image/text previews rather than macOS Quick Look plugins.
+
+Filter names and relative paths; sort using the header buttons or menu by **name, modified, created, added, size, or kind**. Scroll the list horizontally to see additional metadata columns. Date Added and Kind come from native filesystem resource values; unavailable added dates display **—** and sort last. The toolbar opens the current folder in Finder, and each row's context menu offers **Open in Finder** to reveal that item.
+
+In the desktop app, drag from anywhere on a row to offer the original file or folder through a native macOS file-URL dragging session. Dragging an already-selected row includes the entire selection. It advertises copy/link operations; it does not move or delete source files. This uses a small AppKit bridge loaded into Electrobun. Native file dragging is unavailable in the browser development preview.
 
 Shortlists persist in `~/Library/Application Support/Fast Files/shortlist.json` for the native app, and `.cache/shortlist.json` for browser development. These contain local file paths. Generated fixtures, caches, and user selections are ignored by Git.
 
@@ -51,7 +59,7 @@ Shortlists persist in `~/Library/Application Support/Fast Files/shortlist.json` 
 - Server encoded assets have a 128 MiB LRU budget; browser decoded assets have a separate 256 MiB LRU budget to retain a larger warm preview window. Browser accounting includes decoded pixel size; eviction releases preload references and blob URLs. The 41-file prefetch window is best effort: unusually large decoded images can be evicted sooner.
 - Native decoders run in separate short-lived processes with a 12-second CPU limit and 15-second wall timeout.
 - Text reads at most 64 KiB. Binary-looking files get a placeholder. HTML and code render as plain text; they are never executed.
-- Metadata indexing streams directories, skips symlinks and `.git`, `node_modules`, `.hutch`, `.cache`, and `.Trash`, and tolerates unreadable entries. Indexing is not a live filesystem watch; rescan to refresh changed files.
+- Metadata indexing streams directories, skips symlinks and `.git`, `node_modules`, `.hutch`, `.cache`, `.notes`, and `.Trash`, and tolerates unreadable entries. Native metadata queries run in batches of at most 512 entries. Indexing is not a live filesystem watch; rescan to refresh changed files.
 
 ## Checks
 
@@ -63,9 +71,9 @@ bun run benchmark 20000
 ~/.hutch/bin/hutch electrobun build
 ```
 
-The benchmark generates 20,000 small text files under ignored `.cache/benchmark-20000`, then measures metadata indexing. It does not represent thumbnail throughput for a real image archive. A local run indexed all 20,000 files in 404 ms with 78 MiB process RSS on the development machine; this is a warm, synthetic measurement, not a universal speed claim.
+The benchmark generates 20,000 small text files under ignored `.cache/benchmark-20000`, then measures basic filesystem indexing, excluding native Date Added/Kind enrichment. It does not represent thumbnail throughput for a real image archive. An earlier local run indexed all 20,000 files in 404 ms with 78 MiB process RSS on the development machine; this is a warm, synthetic measurement, not a universal speed claim.
 
-The initial version also passed validation on a Namespace macOS Devbox: desktop build, type checking, seven tests (31 assertions), and a 20,000-file metadata scan in 655 ms with 58 MiB RSS. At a 1500×960 browser viewport, the UI rendered 12 rows for the 20,000-file catalog. The native app was checked with its folder picker, code/text, image previews, and switching folders. JSON download was verified in the browser development preview. The expanded preview window and native drag endpoint add coverage in the current nine-test suite.
+The test suite covers bounded preview work and caching, image formats, folder scope, native metadata, Finder actions, sorting, selection ranges, and validated multi-file drag requests. Browser UI checks cover selection, folder navigation, the recursive toggle, context menus, and Quick Look. Actual outbound drag gestures require a manual desktop check. Namespace macOS Devbox checks repeat type checking, the tests, and desktop packaging against uploaded source and synthetic fixtures.
 
 ## Namespace development
 

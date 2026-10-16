@@ -5,8 +5,8 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { MAX_PREVIEW_WINDOW } from "../shared/prefetch";
 
-export function startServer(options: { webRoot: string; helper: string; shortlistPath?: string; pickFolder?: () => Promise<string | undefined>; reveal?: (path: string) => void; armDrag?: (path: string) => void; port?: number }) {
-  const catalog = new Catalog();
+export function startServer(options: { webRoot: string; helper: string; metadataHelper?: string; shortlistPath?: string; pickFolder?: () => Promise<string | undefined>; reveal?: (path: string) => void; openFolder?: (path: string) => void; armDrag?: (paths: string[]) => void; port?: number }) {
+  const catalog = new Catalog(options.metadataHelper);
   const previews = new Previews(catalog, options.helper);
   const token = crypto.randomUUID();
   let windowRevision = 0;
@@ -45,7 +45,7 @@ export function startServer(options: { webRoot: string; helper: string; shortlis
             return json({ ok: true });
           }
         }
-        if (url.pathname === "/api/status") return json({ ...catalog.status, queue: { active: previews.queue.active, queued: previews.queue.queued, bytes: previews.queue.activeBytes, cached: previews.cache.bytes }, nativePicker: Boolean(options.pickFolder), nativeDrag: Boolean(options.armDrag) });
+        if (url.pathname === "/api/status") return json({ ...catalog.status, queue: { active: previews.queue.active, queued: previews.queue.queued, bytes: previews.queue.activeBytes, cached: previews.cache.bytes }, nativePicker: Boolean(options.pickFolder), nativeDrag: Boolean(options.armDrag), finder: Boolean(options.reveal && options.openFolder) });
         if (request.method === "POST" && url.pathname === "/api/open") {
           const { path, recursive } = await request.json();
           const result = await catalog.scan(String(path), Boolean(recursive));
@@ -77,15 +77,27 @@ export function startServer(options: { webRoot: string; helper: string; shortlis
           return new Response(asset.data, { headers: { "Content-Type": "image/png", "Cache-Control": "no-store" } });
         }
         if (request.method === "POST" && url.pathname === "/api/reveal") {
+          if (!options.reveal) throw new Error("Finder actions are available in the desktop app");
           const { id } = await request.json();
           const file = await catalog.validate(id);
           options.reveal?.(file.path); return json({ ok: true });
         }
+        if (request.method === "POST" && url.pathname === "/api/finder-folder") {
+          if (!options.openFolder || !catalog.status.root) throw new Error("Open a folder in the desktop app first");
+          options.openFolder(catalog.status.root); return json({ ok: true });
+        }
         if (request.method === "POST" && url.pathname === "/api/drag") {
           if (!options.armDrag) return json({ error: "File dragging is available in the native desktop app" }, 400);
-          const { id } = await request.json();
-          const file = await catalog.validate(id);
-          options.armDrag(file.path); return json({ ok: true });
+          const { ids, id } = await request.json();
+          const values: unknown[] = Array.isArray(ids) ? [...new Set(ids)] : [id];
+          if (!values.length || values.some(value => typeof value !== "string")) throw new Error("Choose catalog items to drag");
+          const paths: string[] = [];
+          // Bound filesystem concurrency even when thousands of items are selected.
+          for (let i = 0; i < values.length; i += 32) {
+            const files = await Promise.all(values.slice(i, i + 32).map(value => catalog.validate(value as string)));
+            paths.push(...files.map(file => file.path));
+          }
+          options.armDrag(paths); return json({ ok: true });
         }
         return json({ error: "Not found" }, 404);
       } catch (error) {

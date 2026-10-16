@@ -1,11 +1,11 @@
 import { dlopen, FFIType } from "bun:ffi";
 
-export function fileDragBridge(path: string): (file: string) => void {
+export function fileDragBridge(path: string): (files: string[]) => void {
   const library = dlopen(path, {
     ff_install_file_drag: { args: [], returns: FFIType.void },
     ff_arm_file_drag: { args: [FFIType.cstring], returns: FFIType.void },
   });
   library.symbols.ff_install_file_drag();
   // dlopen's library and native drag source remain alive for the app lifetime.
-  return file => library.symbols.ff_arm_file_drag(Buffer.from(`${file}\0`));
+  return files => library.symbols.ff_arm_file_drag(Buffer.from(`${JSON.stringify(files)}\0`));
 }

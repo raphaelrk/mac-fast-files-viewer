@@ -8,9 +8,80 @@ import { Previews, MAX_FILE_BYTES } from "../src/server/previews";
 import { startServer } from "../src/server/server";
 import { deflateSync } from "node:zlib";
 import { MAX_PREVIEW_WINDOW, neighbors } from "../src/shared/prefetch";
+import { FileSelection } from "../src/shared/selection";
+import { compareFiles } from "../src/shared/sort";
+import type { FileEntry } from "../src/shared/types";
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 async function indexed(path: string) { const catalog = new Catalog(); await catalog.scan(path, true); while (!catalog.status.done) await tick(); return catalog; }
+
+test("Finder selection supports command toggles, anchored ranges, collapse, and group dragging", () => {
+  const selection = new FileSelection(), ids = ["a", "b", "c", "d", "e"];
+  selection.click("b", ids); selection.click("d", ids, { toggle: true });
+  expect([...selection.ids]).toEqual(["b", "d"]);
+  expect(selection.dragIds("b", ids)).toEqual(["b", "d"]);
+  expect(selection.dragIds("c", ids)).toEqual(["c"]);
+  selection.click("d", ids, { toggle: true }); expect([...selection.ids]).toEqual(["b"]);
+  selection.click("a", ids, { range: true }); expect([...selection.ids]).toEqual(["a", "b", "c", "d"]);
+  selection.click("c", ids); expect([...selection.ids]).toEqual(["c"]);
+  selection.click("e", ids, { range: true }); expect([...selection.ids]).toEqual(["c", "d", "e"]);
+  selection.click("b", ids, { range: true }); expect([...selection.ids]).toEqual(["b", "c"]);
+  selection.retain(new Set(["a", "b"])); expect([...selection.ids]).toEqual(["b"]); expect(selection.anchor).toBeUndefined();
+  selection.clear(); expect(selection.ids.size).toBe(0); expect(selection.focus).toBeUndefined();
+});
+
+test("all Finder sort fields use their own metadata and missing added dates stay last", () => {
+  const entry = (name: string, values: Partial<FileEntry>): FileEntry => ({ id: name, name, path: `/archive/${name}`, relativePath: name, kind: "text", kindLabel: "Text", extension: "txt", size: 1, modified: 1, created: 1, added: null, ...values });
+  const a = entry("file2", { size: 9, modified: 8, created: 7, added: 6, kindLabel: "Image" });
+  const b = entry("file10", { size: 10, modified: 9, created: 8, added: 7, kindLabel: "Text" });
+  for (const field of ["name", "size", "modified", "created", "added", "kind"] as const) {
+    expect(compareFiles(a, b, field, 1)).toBeLessThan(0); expect(compareFiles(a, b, field, -1)).toBeGreaterThan(0);
+  }
+  const missing = entry("absent", {});
+  expect(compareFiles(missing, a, "added", 1)).toBeGreaterThan(0);
+  expect(compareFiles(missing, a, "added", -1)).toBeGreaterThan(0);
+});
+
+test("default scans list folders without descendants; recursive scans include descendants and omit private notes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fast-files-folders-"));
+  try {
+    await mkdir(join(root, "child")); await mkdir(join(root, ".notes"));
+    await writeFile(join(root, "top.txt"), "top"); await writeFile(join(root, "child", "nested.txt"), "nested");
+    await writeFile(join(root, ".notes", "private.txt"), "private");
+    const catalog = new Catalog(resolve(".cache/metadata"));
+    await catalog.scan(root); while (!catalog.status.done) await tick();
+    expect(catalog.files.map(f => f.name).sort()).toEqual(["child", "top.txt"]);
+    expect(catalog.status.parent).toBe(resolve(catalog.status.root, ".."));
+    const child = catalog.files.find(f => f.name === "child")!;
+    expect(child.kind).toBe("folder"); expect(child.kindLabel).not.toBe("");
+    expect((await new Previews(catalog, "missing").get(child.id, 1600)).preview.type).toBe("folder");
+    await writeFile(join(root, "child", "later.txt"), "new");
+    expect((await catalog.validate(child.id)).path).toBe(child.path);
+    const top = catalog.files.find(f => f.name === "top.txt")!;
+    expect(top.added === null || Number.isFinite(top.added)).toBe(true);
+    expect(top.kindLabel).not.toBe("TXT file"); // Native type description, rather than extension fallback.
+    await catalog.scan(root, true); while (!catalog.status.done) await tick();
+    expect(catalog.files.map(f => f.relativePath).sort()).toEqual(["child", "child/later.txt", "child/nested.txt", "top.txt"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Finder actions use the current catalog folder and validated item paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fast-files-finder-"));
+  let opened: string | undefined, revealed: string | undefined;
+  const app = startServer({ webRoot: resolve("dist/web"), helper: "missing", openFolder: path => opened = path, reveal: path => revealed = path });
+  try {
+    await writeFile(join(root, "example.txt"), "test");
+    await app.catalog.scan(root); while (!app.catalog.status.done) await tick();
+    const base = app.url.split("#")[0], headers = { Authorization: `Bearer ${app.token}`, "Content-Type": "application/json" };
+    expect((await fetch(base + "api/finder-folder", { method: "POST", headers, body: "{}" })).status).toBe(200);
+    expect(opened).toBe(app.catalog.status.root);
+    expect((await fetch(base + "api/reveal", { method: "POST", headers, body: JSON.stringify({ id: "foreign" }) })).status).toBe(400);
+    expect(revealed).toBeUndefined();
+    const file = app.catalog.files[0];
+    expect((await fetch(base + "api/reveal", { method: "POST", headers, body: JSON.stringify({ id: file.id }) })).status).toBe(200);
+    expect(revealed).toBe(file.path);
+  } finally { app.server.stop(true); await rm(root, { recursive: true, force: true }); }
+});
 
 test("expanded preview window covers both directions without dropping boundary files", () => {
   const items = Array.from({ length: 100 }, (_, i) => i);
@@ -22,20 +93,26 @@ test("expanded preview window covers both directions without dropping boundary f
   expect(neighbors([], 0)).toEqual([]);
 });
 
-test("native drag endpoint validates the catalog ID and passes the actual file path to the bridge", async () => {
+test("native drag validates the whole selection, deduplicates, and includes folders", async () => {
   const root = await mkdtemp(join(tmpdir(), "fast-files-drag-"));
-  let dragged: string | undefined;
-  const app = startServer({ webRoot: resolve("dist/web"), helper: "missing", armDrag: path => dragged = path });
+  let dragged: string[] | undefined;
+  const app = startServer({ webRoot: resolve("dist/web"), helper: "missing", armDrag: paths => dragged = paths });
   try {
     await writeFile(join(root, "example file.txt"), "Drop this file");
+    await mkdir(join(root, "folder"));
     await app.catalog.scan(root, false); while (!app.catalog.status.done) await tick();
     const endpoint = app.url.split("#")[0] + "api/drag";
     const headers = { Authorization: `Bearer ${app.token}`, "Content-Type": "application/json" };
     const invalid = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ id: "/etc/passwd" }) });
     expect(invalid.status).toBe(400); expect(dragged).toBeUndefined();
-    const file = app.catalog.files[0];
+    const file = app.catalog.files.find(f => f.kind !== "folder")!;
+    const folder = app.catalog.files.find(f => f.kind === "folder")!;
+    const mixed = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ ids: [file.id, "foreign"] }) });
+    expect(mixed.status).toBe(400); expect(dragged).toBeUndefined();
     const valid = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ id: file.id }) });
-    expect(valid.status).toBe(200); expect(dragged).toBe(file.path);
+    expect(valid.status).toBe(200); expect(dragged).toEqual([file.path]);
+    const multiple = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ ids: [folder.id, file.id, folder.id] }) });
+    expect(multiple.status).toBe(200); expect(dragged).toEqual([folder.path, file.path]);
   } finally { app.server.stop(true); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -78,15 +155,16 @@ test("catalog skips symlinks and dependency folders; text reads are bounded and 
     await writeFile(join(root, "binary"), Buffer.from([0, 1, 2]));
     await writeFile(join(root, "node_modules", "ignored.txt"), "ignored");
     await symlink(join(root, "nested", "code.ts"), join(root, "link"));
-    const catalog = await indexed(root); expect(catalog.files.length).toBe(2);
+    const catalog = await indexed(root); expect(catalog.files.length).toBe(3);
     const previews = new Previews(catalog, "missing");
     const text = await previews.get(catalog.files.find(f => f.name === "code.ts")!.id, 1600);
     expect(text.preview.type).toBe("text");
     if (text.preview.type === "text") { expect(text.preview.truncated).toBe(true); expect(text.preview.text.length).toBeLessThanOrEqual(65536); }
     const binary = await previews.get(catalog.files.find(f => f.name === "binary")!.id, 1600);
     expect(binary.preview.type).toBe("unavailable");
-    catalog.files[0].size = MAX_FILE_BYTES + 1;
-    expect((await previews.get(catalog.files[0].id, 240)).preview.type).toBe("unavailable");
+    const code = catalog.files.find(f => f.name === "code.ts")!;
+    code.size = MAX_FILE_BYTES + 1;
+    expect((await previews.get(code.id, 240)).preview.type).toBe("unavailable");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

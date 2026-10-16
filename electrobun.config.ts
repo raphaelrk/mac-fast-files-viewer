@@ -10,6 +10,7 @@ export default {
       "dist/web": "views/mainview",
       ".cache/thumbnail": "helpers/thumbnail",
       ".cache/file-drag.dylib": "helpers/file-drag.dylib",
+      ".cache/metadata": "helpers/metadata",
     },
   },
 } satisfies ElectrobunConfig;
