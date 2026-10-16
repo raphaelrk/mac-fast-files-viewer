@@ -5,6 +5,7 @@ export default {
   scripts: { preBuild: "scripts/prebuild.ts" },
   build: {
     mainProcess: "bun",
+    mac: { icons: "icon.iconset" },
     bun: { entrypoint: "src/bun/index.ts" },
     copy: {
       "dist/web": "views/mainview",

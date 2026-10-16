@@ -4,6 +4,8 @@ A macOS file viewer for quickly reviewing large archives of images, text, and co
 
 Uses a virtualized list, content thumbnails large enough to skim, and immediate hover previews. The initial desktop target is Electrobun with Bun and the native macOS webview.
 
+The app uses the **Tailwind** icon: a golden folder with an ivory gust of wind on teal. [Icon artwork, alternatives, and generation prompts](assets/icons/README.md) live in the repository. Run `bun run build:icon` to regenerate the macOS icon set after changing its source artwork.
+
 ## What works
 
 - Index files and folders with names, paths, sizes, modified/created/added dates, and Finder kind descriptions without reading file contents. Start in the current folder; optionally include all subfolders.
