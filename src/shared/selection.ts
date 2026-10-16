@@ -5,7 +5,7 @@ export class FileSelection {
   focus: string | undefined;
 
   clear() { this.ids.clear(); this.anchor = this.focus = undefined; }
-  click(id: string, ordered: string[], modifiers: { toggle?: boolean; range?: boolean } = {}) {
+  click(id: string, ordered: string[], modifiers: { toggle?: boolean; range?: boolean; toggleSingle?: boolean } = {}) {
     if (modifiers.range) {
       const anchor = this.anchor && ordered.includes(this.anchor) ? this.anchor : this.focus ?? id;
       const start = ordered.indexOf(anchor), end = ordered.indexOf(id);
@@ -16,6 +16,8 @@ export class FileSelection {
     } else if (modifiers.toggle) {
       if (this.ids.has(id)) this.ids.delete(id); else this.ids.add(id);
       this.anchor = id;
+    } else if (modifiers.toggleSingle && this.ids.size === 1 && this.ids.has(id)) {
+      this.ids.clear(); this.anchor = id;
     } else {
       this.ids = new Set([id]); this.anchor = id;
     }

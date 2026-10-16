@@ -11,9 +11,38 @@ import { MAX_PREVIEW_WINDOW, neighbors } from "../src/shared/prefetch";
 import { FileSelection } from "../src/shared/selection";
 import { compareFiles } from "../src/shared/sort";
 import type { FileEntry } from "../src/shared/types";
+import { DEFAULT_COLUMNS, moveColumn, validColumns, columnTemplate } from "../src/shared/columns";
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 async function indexed(path: string) { const catalog = new Catalog(); await catalog.scan(path, true); while (!catalog.status.done) await tick(); return catalog; }
+
+test("repeated pointer clicks release a single selection without breaking keyboard navigation or group collapse", () => {
+  const selection = new FileSelection(), ids = ["a", "b", "c"];
+  selection.click("b", ids); selection.click("b", ids, { toggleSingle: true });
+  expect(selection.ids.size).toBe(0); expect(selection.focus).toBe("b");
+  selection.click("b", ids, { toggleSingle: true }); expect([...selection.ids]).toEqual(["b"]);
+  selection.click("b", ids); expect([...selection.ids]).toEqual(["b"]); // Arrow at a boundary still selects.
+  selection.click("c", ids, { toggle: true });
+  selection.click("b", ids, { toggleSingle: true }); expect([...selection.ids]).toEqual(["b"]);
+  selection.click("b", ids, { toggleSingle: true }); expect(selection.ids.size).toBe(0);
+});
+
+test("column moves preserve every column across both directions and reject invalid stored layouts", () => {
+  const original = [...DEFAULT_COLUMNS];
+  const right = moveColumn(original, "thumbnail", "kind", true);
+  expect(right).toEqual(["name", "modified", "created", "added", "size", "kind", "thumbnail"]);
+  expect(original).toEqual([...DEFAULT_COLUMNS]);
+  const left = moveColumn(right, "thumbnail", "name"); expect(left).toEqual(original);
+  expect(moveColumn(original, "modified", "created", true)).toEqual(["thumbnail", "name", "created", "modified", "added", "size", "kind"]);
+  expect(moveColumn(original, "kind", "modified")).toEqual(["thumbnail", "name", "kind", "modified", "created", "added", "size"]);
+  expect(moveColumn(original, "name", "name")).toEqual(original);
+  expect(validColumns(right)).toBe(true);
+  expect(validColumns([...right, "name"])).toBe(false);
+  expect(validColumns(["name", "name", ...right.slice(2)])).toBe(false);
+  expect(validColumns(["unknown", ...right.slice(1)])).toBe(false);
+  expect(validColumns(null)).toBe(false);
+  expect(columnTemplate(right).endsWith("var(--thumb-column)")).toBe(true);
+});
 
 test("Finder selection supports command toggles, anchored ranges, collapse, and group dragging", () => {
   const selection = new FileSelection(), ids = ["a", "b", "c", "d", "e"];

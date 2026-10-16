@@ -116,7 +116,7 @@ button,button *{user-select:none;-webkit-user-select:none}
 #column-track{display:grid;width:max(100%,var(--list-min-width));grid-template-columns:var(--file-columns);padding:0 8px;height:26px;align-items:center;will-change:transform}
 #column-track button{border:0;border-radius:0;padding:4px;background:transparent;font-size:9px;text-align:left;letter-spacing:.7px;color:#8996a7}
 #column-track button[aria-pressed=true]{color:var(--accent)}
-#column-track .name-column{grid-column:span 2;padding-left:var(--thumb-column)}
+#column-track .name-column{padding-left:4px}
 #column-track button[data-sort=size]{text-align:right;padding-right:4px}
 #column-track button[data-sort=kind]{padding-left:4px}
 #rows{min-width:var(--list-min-width);width:100%}
@@ -160,6 +160,49 @@ footer>span:first-child{gap:5px;font-size:9px}
 .row-density{display:flex;align-items:center;gap:7px;white-space:nowrap;color:#a4b0bd;font-size:10px}
 #row-height{width:96px;height:16px;margin:0;cursor:pointer;accent-color:var(--accent);user-select:none;-webkit-user-select:none}
 #row-height-value{min-width:34px;font-variant-numeric:tabular-nums;text-align:right}
+
+/* A separate wheel target keeps the pointer away from virtualized file rows. */
+:root{--scroll-gutter:18px}
+.brand-icon{background:transparent;object-fit:contain}
+.list-region{display:flex;flex:1;min-height:0;min-width:0}
+#list{min-width:0;overscroll-behavior:contain}
+#scroll-gutter{width:var(--scroll-gutter);flex-shrink:0;background:#191e27;border-left:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:#596777;outline-offset:-2px}
+#scroll-gutter:hover,#scroll-gutter:focus-visible{background:#27322f;color:var(--accent)}
+.columns{width:calc(100% - var(--scroll-gutter))}
+#columns-button{padding:2px 6px;font-size:10px}
+#column-track{will-change:auto}
+#column-track button{cursor:grab;height:100%;min-width:0;overflow:hidden;text-overflow:ellipsis}
+#column-track button:active{cursor:grabbing}
+#column-track button.dragging{opacity:.45}
+#column-track [data-drop-side=before]{box-shadow:inset 3px 0 0 var(--accent)}
+#column-track [data-drop-side=after]{box-shadow:inset -3px 0 0 var(--accent)}
+.file-row{--row-background:#14171d}
+.file-row:hover,.file-row.active{--row-background:#222d2b}
+.file-row.locked{--row-background:#304237}
+.file-thumbnail{width:var(--thumb-column);height:100%;display:flex;align-items:center;padding-right:8px;background:var(--row-background)}
+#rows[data-thumbnail-edge=right] .file-thumbnail{position:sticky;right:0;z-index:1;box-shadow:-1px 0 #303a46}
+#column-track[data-thumbnail-edge=right] [data-column=thumbnail]{position:sticky;right:0;z-index:2;background:#191e27;box-shadow:-1px 0 #303a46}
+
+.info-dialog{width:min(600px,92vw);max-height:calc(100vh - 60px);overflow:auto;padding:20px;border:1px solid #526071;border-radius:12px;background:#18202b;color:#dbe3e9;box-shadow:0 25px 90px #000a;user-select:text;-webkit-user-select:text}
+.info-dialog::backdrop{background:#0009;backdrop-filter:blur(4px)}
+.info-heading{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.info-heading>div{flex:1}
+.info-heading h2{font-size:21px;flex:1}
+.info-heading>button{border:0;background:transparent;font-size:23px;padding:2px 7px;margin-left:auto}
+.info-dialog p{font-size:12px;line-height:1.7;margin:10px 0}
+.info-dialog h3{font-size:13px;font-weight:600;margin:18px 0 6px}
+.muted{color:#95a3b4;font-size:11px}
+.shortcut-list{margin-top:16px}
+.shortcut-list>div{padding:7px 0}
+.shortcut-list dt{color:#b7c4d0}
+.shortcut-list kbd{font-size:10px}
+.column-presets{display:flex;gap:6px;flex-wrap:wrap;margin:15px 0}
+.column-presets button{font-size:11px}
+#column-controls{list-style:none;margin:0;padding:0}
+#column-controls li{display:flex;align-items:center;gap:6px;border-top:1px solid var(--line);padding:5px 0;font-size:12px}
+#column-controls li>span{flex:1}
+#column-controls button{padding:3px 8px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 
 @media(max-width:800px){footer{gap:8px;padding:2px 8px}
 footer>span:first-child{gap:3px;font-size:8px}

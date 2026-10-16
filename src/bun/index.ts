@@ -1,8 +1,9 @@
-import { BrowserWindow, Utils } from "electrobun/main";
+import { ApplicationMenu, BrowserWindow, Utils } from "electrobun/main";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { startServer } from "../server/server";
 import { fileDragBridge } from "./file-drag";
+import { applicationMenu } from "./menu";
 
 // Bundled entrypoint is Resources/app/bun/index.js; copies live in Resources/app.
 const appRoot = resolve(import.meta.dir, "..");
@@ -17,4 +18,10 @@ const app = startServer({
   armDrag,
 });
 const window = new BrowserWindow({ title: "Fast Files", url: app.url, frame: { width: 1500, height: 960, x: 80, y: 60 } });
+ApplicationMenu.setApplicationMenu(applicationMenu);
+ApplicationMenu.on("application-menu-clicked", event => {
+  if ((event as { data?: { action?: string } }).data?.action === "about") {
+    window.webview.executeJavascript("document.getElementById('about-button')?.click()");
+  }
+});
 void window;

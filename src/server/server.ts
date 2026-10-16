@@ -20,7 +20,7 @@ export function startServer(options: { webRoot: string; helper: string; metadata
       const origin = request.headers.get("origin");
       if (origin && origin !== url.origin) return new Response("Invalid origin", { status: 403 });
       if (!url.pathname.startsWith("/api/")) {
-        const assets: Record<string, string> = { "/": "index.html", "/index.js": "index.js", "/index.css": "index.css" };
+        const assets: Record<string, string> = { "/": "index.html", "/index.js": "index.js", "/index.css": "index.css", "/app-icon.png": "app-icon.png" };
         const name = assets[url.pathname];
         if (!name) return new Response("Not found", { status: 404 });
         return new Response(Bun.file(resolve(options.webRoot, name)), { headers: {

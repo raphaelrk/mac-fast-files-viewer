@@ -43,13 +43,17 @@ Open the printed localhost URL and paste an absolute folder path. The native app
 
 Use **↑/↓** to browse from the current preview, **S** to toggle shortlist, **⌘O** to open a folder, and **⌘↑** to go to its parent. Double-click a folder or press Enter to enter it. **Include subfolders** switches between the default current-folder listing and a recursive scan.
 
-Hover follows the row under the pointer during scrolling until items are selected. A normal click selects one item, **⌘-click** toggles individual items, and **Shift-click** selects a range. Another normal click collapses a group to one item. Use the preview's **×** or Escape to clear all selection and resume hover. **⌘A** selects the filtered list when it has keyboard focus.
+Hover follows the row under the pointer during scrolling until items are selected. A normal click selects one item, **⌘-click** toggles individual items, and **Shift-click** selects a range. A normal click collapses a group to one item; clicking the sole selected row again releases selection while retaining its hover preview. Use the preview's **×** or Escape to clear all selection and resume hover. **⌘A** selects the filtered list when it has keyboard focus. Scroll in the narrow gutter on the right of the list to keep the current preview steady.
 
 **Space** immediately opens or closes an in-app Quick Look overlay, reusing the cached image or thumbnail while a larger preview loads. Use its arrows to browse; Escape also dismisses it. This overlay uses the app's supported image/text previews rather than macOS Quick Look plugins.
 
 Filter names and relative paths; sort using the header buttons or menu by **name, modified, created, added, size, or kind**. Scroll the list horizontally to see additional metadata columns. Date Added and Kind come from native filesystem resource values; unavailable added dates display **—** and sort last. The toolbar opens the current folder in Finder, and each row's context menu offers **Open in Finder** to reveal that item.
 
 The **Row height** slider in the bottom bar adjusts rows from 36 to 120 px (56 px by default), including thumbnail size. Resizing keeps your place in the list. Relative paths appear under filenames only when **Include subfolders** is enabled; dates always stay on one line.
+
+Drag column headers to reorder all seven columns, including thumbnails. **Option+←/→** moves a focused header one position. The **Columns** button provides accessible move controls and **Thumbnails left/right** presets. When thumbnails are last, they stay pinned beside the preview while the other columns scroll. Column order is stored in this window's session; reloading another window does not change it.
+
+The **About** button credits the creator, lists shortcuts, and explains supported previews. The native **Fast Files** menu also opens About and provides **Quit Fast Files (⌘Q)**. Quit is an application menu command, not a global shortcut.
 
 In the desktop app, drag from anywhere on a row to offer the original file or folder through a native macOS file-URL dragging session. Dragging an already-selected row includes the entire selection. It advertises copy/link operations; it does not move or delete source files. This uses a small AppKit bridge loaded into Electrobun. Native file dragging is unavailable in the browser development preview.
 
@@ -91,4 +95,4 @@ Keep personal machine names, absolute workspace paths, local test captures, and 
 
 ## Still ahead
 
-This is an initial working prototype. Real-archive responsiveness and memory profiling, progressive indexing refinements, in-app tuning, animated GIF playback, richer format support, similarity grouping, and direct gallery integration remain future work. Desktop packaging currently produces a local development build, without distribution signing/notarization.
+This is an initial working prototype. Real-archive responsiveness and memory profiling, progressive indexing refinements, in-app tuning, animated GIF playback, richer format support, similarity grouping, and direct gallery integration remain future work. [Multiple windows and tabs](docs/multiple-windows.md) are assessed but not implemented. Desktop packaging currently produces a local development build, without distribution signing/notarization.

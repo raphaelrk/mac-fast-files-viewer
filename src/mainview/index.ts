@@ -2,10 +2,13 @@ import type { FileEntry, Preview, ScanStatus } from "../shared/types";
 import { neighbors, BROWSER_CACHE_BYTES } from "../shared/prefetch";
 import { FileSelection } from "../shared/selection";
 import { compareFiles, type SortField } from "../shared/sort";
+import { DEFAULT_COLUMNS, COLUMN_LABELS, validColumns, moveColumn, columnTemplate, type ColumnId } from "../shared/columns";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const list = $("list"), rows = $("rows"), folder = $<HTMLInputElement>("folder"), search = $<HTMLInputElement>("search");
 const quicklook = $<HTMLDialogElement>("quicklook");
+const about = $<HTMLDialogElement>("about"), columnSettings = $<HTMLDialogElement>("column-settings");
+const columnHeader = $("column-header"), columnTrack = $("column-track"), scrollGutter = $("scroll-gutter");
 const token = location.hash.slice(1) || sessionStorage.getItem("fast-files-token") || "";
 sessionStorage.setItem("fast-files-token", token);
 history.replaceState(null, "", location.pathname);
@@ -17,7 +20,10 @@ let nativePicker = false, nativeDrag = false, finderAvailable = false;
 let sortField: SortField = "modified", sortDirection: 1 | -1 = -1;
 let scanSerial = 0, paintFrame = 0, windowTimer: ReturnType<typeof setTimeout>, paintFallback: ReturnType<typeof setTimeout>;
 let selectionVersion = 0, pointer: { x: number; y: number } | undefined, contextFile: FileEntry | undefined;
-let press: { id: string; x: number; y: number; modified: boolean; moved: boolean } | undefined;
+let press: { id: string; x: number; y: number; modified: boolean; moved: boolean; selectedOnDown: boolean } | undefined;
+let columnOrder: ColumnId[] = [...DEFAULT_COLUMNS], draggingColumn: ColumnId | undefined, suppressSortUntil = 0;
+try { const value = JSON.parse(sessionStorage.getItem("fast-files-columns") || "null"); if (validColumns(value)) columnOrder = value; } catch { /* Use the default order for invalid saved preferences. */ }
+const columnHeaders = new Map([...columnTrack.querySelectorAll<HTMLButtonElement>("[data-column]")].map(button => [button.dataset.column as ColumnId, button]));
 const rendered = new Map<string, HTMLElement>(), saved = new Map<string, FileEntry>();
 let saveWork = Promise.resolve();
 const selectedFiles = () => [...selection.ids].map(id => byId.get(id)).filter((file): file is FileEntry => Boolean(file));
@@ -33,6 +39,110 @@ const size = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 ** 2 
 const date = (value: number | null | undefined) => value == null ? "—" : new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 function clearTextSelection() { window.getSelection()?.removeAllRanges(); }
 function message(text: string) { const element = document.createElement("p"); element.className = "preview-message"; element.textContent = text; return element; }
+
+function orderRow(element: HTMLElement) {
+  const cells = new Map([...element.children].map(cell => [(cell as HTMLElement).dataset.column, cell]));
+  element.append(...columnOrder.map(id => cells.get(id)!));
+}
+function applyColumnOrder(announce?: ColumnId) {
+  const focusedColumn = (document.activeElement as HTMLElement | null)?.dataset.column as ColumnId | undefined;
+  document.documentElement.style.setProperty("--file-columns", columnTemplate(columnOrder));
+  columnTrack.append(...columnOrder.map(id => columnHeaders.get(id)!));
+  columnOrder.forEach((id, index) => {
+    const button = columnHeaders.get(id)!;
+    button.draggable = true;
+    button.title = `${COLUMN_LABELS[id]} · drag to reorder, or Option + ← / →`;
+    button.setAttribute("aria-describedby", "column-status");
+    button.dataset.position = String(index + 1);
+  });
+  const pinned = columnOrder.at(-1) === "thumbnail" ? "right" : "none";
+  rows.dataset.thumbnailEdge = columnTrack.dataset.thumbnailEdge = pinned;
+  for (const element of rendered.values()) orderRow(element);
+  columnHeader.scrollLeft = list.scrollLeft;
+  sessionStorage.setItem("fast-files-columns", JSON.stringify(columnOrder));
+  renderColumnControls();
+  if (focusedColumn) columnHeaders.get(focusedColumn)?.focus({ preventScroll: true });
+  if (announce) $("column-status").textContent = `${COLUMN_LABELS[announce]} is column ${columnOrder.indexOf(announce) + 1} of ${columnOrder.length}.`;
+}
+function shiftColumn(id: ColumnId, direction: number) {
+  const target = columnOrder[columnOrder.indexOf(id) + direction];
+  if (!target) return;
+  columnOrder = moveColumn(columnOrder, id, target, direction > 0); applyColumnOrder(id);
+}
+function renderColumnControls() {
+  const controls = columnOrder.map((id, index) => {
+    const item = document.createElement("li"), label = document.createElement("span"); label.textContent = COLUMN_LABELS[id];
+    item.append(label);
+    for (const direction of [-1, 1]) {
+      const button = document.createElement("button"); button.textContent = direction < 0 ? "←" : "→";
+      button.setAttribute("aria-label", `Move ${COLUMN_LABELS[id]} ${direction < 0 ? "left" : "right"}`);
+      button.disabled = index + direction < 0 || index + direction >= columnOrder.length;
+      button.onclick = () => { shiftColumn(id, direction); $<HTMLButtonElement>("columns-close").focus({ preventScroll: true }); };
+      item.append(button);
+    }
+    return item;
+  });
+  $("column-controls").replaceChildren(...controls);
+}
+function showInfo(dialog: HTMLDialogElement) {
+  closeQuickLook(); $("context-menu").hidden = true;
+  for (const other of [about, columnSettings]) if (other !== dialog && other.open) other.close();
+  if (!dialog.open) dialog.showModal();
+}
+function finishColumnDrag() {
+  draggingColumn = undefined; suppressSortUntil = performance.now() + 250;
+  columnHeaders.forEach(header => { header.classList.remove("dragging"); delete header.dataset.dropSide; });
+}
+for (const [id, button] of columnHeaders) {
+  button.addEventListener("keydown", event => {
+    if (event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      event.preventDefault(); event.stopPropagation(); shiftColumn(id, event.key === "ArrowLeft" ? -1 : 1);
+    }
+  });
+  button.addEventListener("dragstart", event => {
+    draggingColumn = id; suppressSortUntil = Infinity; pointer = undefined;
+    button.classList.add("dragging");
+    event.dataTransfer?.setData("text/x-fast-files-column", id);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  });
+  button.addEventListener("dragover", event => {
+    if (!draggingColumn) return;
+    event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    const rect = button.getBoundingClientRect();
+    columnHeaders.forEach(header => delete header.dataset.dropSide);
+    button.dataset.dropSide = event.clientX >= rect.left + rect.width / 2 ? "after" : "before";
+  });
+  button.addEventListener("drop", event => {
+    if (!draggingColumn) return;
+    event.preventDefault();
+    const moved = draggingColumn, rect = button.getBoundingClientRect();
+    columnOrder = moveColumn(columnOrder, moved, id, event.clientX >= rect.left + rect.width / 2);
+    applyColumnOrder(moved); finishColumnDrag();
+  });
+  button.addEventListener("dragend", finishColumnDrag);
+}
+columnHeader.addEventListener("dragover", event => {
+  if (!draggingColumn) return;
+  event.preventDefault();
+  const rect = columnHeader.getBoundingClientRect();
+  if (event.clientX < rect.left + 24) list.scrollLeft -= 20;
+  else if (event.clientX > rect.right - 24) list.scrollLeft += 20;
+});
+$("columns-button").onclick = () => showInfo(columnSettings);
+$("columns-close").onclick = () => columnSettings.close();
+$("columns-reset").onclick = () => { columnOrder = [...DEFAULT_COLUMNS]; applyColumnOrder(); };
+for (const side of ["left", "right"]) $(`thumbnails-${side}`).onclick = () => {
+  const rest = columnOrder.filter(id => id !== "thumbnail");
+  columnOrder = side === "right" ? [...rest, "thumbnail"] : ["thumbnail", ...rest];
+  applyColumnOrder("thumbnail");
+};
+$("about-button").onclick = () => showInfo(about);
+$("about-close").onclick = () => about.close();
+for (const dialog of [about, columnSettings]) dialog.addEventListener("click", event => {
+  if (event.target !== dialog) return;
+  const rect = dialog.getBoundingClientRect();
+  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+});
 
 // Cache costs include decoded pixels, and retained images are decoded in advance.
 type Cached = { preview: Preview; blob?: string; image?: HTMLImageElement; bytes: number };
@@ -107,30 +217,32 @@ function selectionChanged(preferred?: FileEntry) {
   if (preferred) setActive(preferred, true); else refreshInspector();
   schedulePaint(); requestWindow();
 }
-function clickFile(file: FileEntry, modifiers: { toggle?: boolean; range?: boolean } = {}) {
+function clickFile(file: FileEntry, modifiers: { toggle?: boolean; range?: boolean; toggleSingle?: boolean } = {}) {
   if (modifiers.range && !selection.anchor && active) selection.anchor = active.id;
   selection.click(file.id, orderedIds, modifiers); selectionChanged(file);
 }
 function row(file: FileEntry, index: number) {
   const element = document.createElement("div"); element.className = "file-row"; element.dataset.id = file.id;
   element.setAttribute("role", "option"); element.id = `file-${file.id}`;
-  const info = document.createElement("div"); info.className = "file-info";
+  const info = document.createElement("div"); info.className = "file-info"; info.dataset.column = "name";
   const name = document.createElement("div"); name.className = "filename";
   const path = document.createElement("div"); path.className = "filepath"; path.textContent = file.relativePath;
   info.append(name);
   if ($<HTMLInputElement>("recursive").checked) info.append(path);
-  element.append(thumbnail(file), info);
+  const thumb = document.createElement("div"); thumb.className = "file-thumbnail"; thumb.dataset.column = "thumbnail"; thumb.append(thumbnail(file));
+  element.append(thumb, info);
   for (const [field, value] of [["modified", date(file.modified)], ["created", date(file.created)], ["added", date(file.added)], ["size", file.kind === "folder" ? "—" : size(file.size)], ["kind", file.kindLabel]] as const) {
-    const cell = document.createElement("div"); cell.className = `file-${field}`; cell.textContent = value; cell.title = value; element.append(cell);
+    const cell = document.createElement("div"); cell.className = `file-${field}`; cell.dataset.column = field; cell.textContent = value; cell.title = value; element.append(cell);
   }
+  orderRow(element);
   element.style.top = `${index * rowHeight}px`;
-  element.addEventListener("mouseenter", () => { if (!selection.ids.size && !quicklook.open) setActive(file); });
+  element.addEventListener("mouseenter", () => { if (!selection.ids.size && !quicklook.open && !draggingColumn) setActive(file); });
   element.addEventListener("pointerdown", event => {
     if (event.button !== 0) return;
     clearTextSelection();
     list.focus({ preventScroll: true });
     const modified = event.metaKey || event.ctrlKey || event.shiftKey;
-    press = { id: file.id, x: event.clientX, y: event.clientY, modified, moved: false };
+    press = { id: file.id, x: event.clientX, y: event.clientY, modified, moved: false, selectedOnDown: selection.ids.has(file.id) };
     if (modified) clickFile(file, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey });
     else if (!selection.ids.has(file.id)) clickFile(file);
     // Preserve a selected group until mouse-up, so any selected row drags it.
@@ -141,7 +253,8 @@ function row(file: FileEntry, index: number) {
     const previous = press; press = undefined;
     list.focus({ preventScroll: true });
     if (previous?.id === file.id && (previous.modified || previous.moved)) return;
-    clickFile(file, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey });
+    if (previous?.id === file.id && !previous.selectedOnDown) return;
+    clickFile(file, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey, toggleSingle: true });
   });
   element.addEventListener("dblclick", event => { event.preventDefault(); clearTextSelection(); if (file.kind === "folder") void openFolder(file.path); });
   element.addEventListener("dragstart", event => event.preventDefault());
@@ -154,7 +267,7 @@ function row(file: FileEntry, index: number) {
     $<HTMLButtonElement>("context-reveal").disabled = !finderAvailable;
     $("context-reveal").focus({ preventScroll: true });
   });
-  element.title = "Click to select; ⌘-click to toggle; Shift-click for a range. Drag selected items to another app.";
+  element.title = "Click to select; click the selected row again to release. ⌘-click to toggle; Shift-click for a range. Drag selected items to another app.";
   return element;
 }
 function paint() {
@@ -174,7 +287,7 @@ function paint() {
     element.setAttribute("aria-selected", String(selection.ids.has(file.id)));
     element.querySelector(".filename")!.textContent = `${saved.has(file.path) ? "★ " : ""}${file.name}`;
     const cached = touch(`${file.id}/240`);
-    if (cached && element.dataset.preview !== `${file.id}/240`) { element.firstElementChild!.replaceWith(thumbnail(file)); element.dataset.preview = `${file.id}/240`; }
+    if (cached && element.dataset.preview !== `${file.id}/240`) { element.querySelector(".file-thumbnail")!.replaceChildren(thumbnail(file)); element.dataset.preview = `${file.id}/240`; }
   }
   if (selection.ids.size > 1) renderGroup();
 }
@@ -271,14 +384,29 @@ async function prefetch() {
   runLoads();
 }
 function hoverUnderPointer() {
-  if (!pointer || selection.ids.size || quicklook.open) return;
+  if (!pointer || selection.ids.size || quicklook.open || draggingColumn) return;
   const bounds = list.getBoundingClientRect();
   if (pointer.x < bounds.left || pointer.x >= bounds.right || pointer.y < bounds.top || pointer.y >= bounds.bottom) return;
   const file = filtered[Math.floor((pointer.y - bounds.top + list.scrollTop) / rowHeight)]; if (file) setActive(file);
 }
 list.addEventListener("mousemove", event => { pointer = { x: event.clientX, y: event.clientY }; hoverUnderPointer(); });
 list.addEventListener("mouseleave", () => pointer = undefined);
-list.addEventListener("scroll", () => { $("column-track").style.transform = `translateX(${-list.scrollLeft}px)`; $("context-menu").hidden = true; schedulePaint(); hoverUnderPointer(); requestWindow(); }, { passive: true });
+list.addEventListener("scroll", () => { columnHeader.scrollLeft = list.scrollLeft; $("context-menu").hidden = true; schedulePaint(); hoverUnderPointer(); requestWindow(); }, { passive: true });
+scrollGutter.addEventListener("mouseenter", () => pointer = undefined);
+scrollGutter.addEventListener("wheel", event => {
+  event.preventDefault(); pointer = undefined;
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? list.clientHeight : 1;
+  list.scrollBy({ top: event.shiftKey ? 0 : event.deltaY * unit, left: (event.deltaX || (event.shiftKey ? event.deltaY : 0)) * unit });
+}, { passive: false });
+scrollGutter.addEventListener("keydown", event => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const distance = event.key === "ArrowDown" ? rowHeight : event.key === "ArrowUp" ? -rowHeight : event.key === "PageDown" ? list.clientHeight : event.key === "PageUp" ? -list.clientHeight : 0;
+  if (!distance && event.key !== "Home" && event.key !== "End") return;
+  event.preventDefault(); event.stopPropagation(); pointer = undefined;
+  if (event.key === "Home") list.scrollTop = 0;
+  else if (event.key === "End") list.scrollTop = list.scrollHeight;
+  else list.scrollTop += distance;
+});
 new ResizeObserver(() => { schedulePaint(); requestWindow(); }).observe(list);
 $("row-height").addEventListener("input", () => {
   const position = list.scrollTop / rowHeight;
@@ -320,7 +448,9 @@ search.addEventListener("input", () => { clearTimeout(filterTimer); filterTimer 
 $("kind").addEventListener("change", () => applyFilter());
 $("sort").addEventListener("change", () => changeSort($<HTMLSelectElement>("sort").value as SortField));
 $("sort-direction").addEventListener("click", () => changeSort(sortField, true));
-document.querySelectorAll<HTMLButtonElement>("[data-sort]").forEach(button => button.onclick = () => changeSort(button.dataset.sort as SortField, button.dataset.sort === sortField));
+document.querySelectorAll<HTMLButtonElement>("[data-sort]").forEach(button => button.onclick = () => {
+  if (performance.now() >= suppressSortUntil) changeSort(button.dataset.sort as SortField, button.dataset.sort === sortField);
+});
 async function openFolder(path: string, focusPath?: string) {
   if (!path.trim()) return;
   const serial = ++scanSerial;
@@ -371,6 +501,10 @@ $("export").addEventListener("click", () => {
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = "fast-files-shortlist.json"; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 5000);
 });
 document.addEventListener("keydown", event => {
+  if (about.open || columnSettings.open) {
+    if (event.key === "Escape") { event.preventDefault(); (about.open ? about : columnSettings).close(); }
+    return;
+  }
   const target = event.target as HTMLElement, editable = target.matches("input,textarea,select") || target.isContentEditable;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") { event.preventDefault(); $("choose").click(); return; }
   if (editable) return;
@@ -390,7 +524,7 @@ document.addEventListener("keydown", event => {
     selection.click(file.id, orderedIds, { range: event.shiftKey }); setActive(file, true); ensureVisible(file);
   }
 });
-updateSaved();
+applyColumnOrder(); updateSaved();
 void api<FileEntry[]>("/api/shortlist").then(items => { for (const file of items) saved.set(file.path, file); updateSaved(); schedulePaint(); }).catch(() => {});
 async function poll() {
   try {
