@@ -9,7 +9,7 @@ const quicklook = $<HTMLDialogElement>("quicklook");
 const token = location.hash.slice(1) || sessionStorage.getItem("fast-files-token") || "";
 sessionStorage.setItem("fast-files-token", token);
 history.replaceState(null, "", location.pathname);
-const ROW = 92;
+let rowHeight = 56;
 let files: FileEntry[] = [], filtered: FileEntry[] = [], orderedIds: string[] = [], active: FileEntry | undefined;
 const byId = new Map<string, FileEntry>(), selection = new FileSelection();
 let root = "", parent = "", generation = "", cursor = 0;
@@ -117,11 +117,13 @@ function row(file: FileEntry, index: number) {
   const info = document.createElement("div"); info.className = "file-info";
   const name = document.createElement("div"); name.className = "filename";
   const path = document.createElement("div"); path.className = "filepath"; path.textContent = file.relativePath;
-  info.append(name, path); element.append(thumbnail(file), info);
+  info.append(name);
+  if ($<HTMLInputElement>("recursive").checked) info.append(path);
+  element.append(thumbnail(file), info);
   for (const [field, value] of [["modified", date(file.modified)], ["created", date(file.created)], ["added", date(file.added)], ["size", file.kind === "folder" ? "—" : size(file.size)], ["kind", file.kindLabel]] as const) {
     const cell = document.createElement("div"); cell.className = `file-${field}`; cell.textContent = value; cell.title = value; element.append(cell);
   }
-  element.style.top = `${index * ROW}px`;
+  element.style.top = `${index * rowHeight}px`;
   element.addEventListener("mouseenter", () => { if (!selection.ids.size && !quicklook.open) setActive(file); });
   element.addEventListener("pointerdown", event => {
     if (event.button !== 0) return;
@@ -157,16 +159,16 @@ function row(file: FileEntry, index: number) {
 }
 function paint() {
   cancelAnimationFrame(paintFrame); clearTimeout(paintFallback); paintFrame = 0;
-  rows.style.height = `${filtered.length * ROW}px`;
+  rows.style.height = `${filtered.length * rowHeight}px`;
   $("empty").hidden = filtered.length > 0;
   if (!filtered.length && root) { $("empty").querySelector("h1")!.textContent = "No matching items"; $("empty").querySelector("p")!.textContent = "Try changing your filter or opening another folder."; }
-  const first = Math.max(0, Math.floor(list.scrollTop / ROW) - 4), last = Math.min(filtered.length, Math.ceil((list.scrollTop + list.clientHeight) / ROW) + 4);
+  const first = Math.max(0, Math.floor(list.scrollTop / rowHeight) - 4), last = Math.min(filtered.length, Math.ceil((list.scrollTop + list.clientHeight) / rowHeight) + 4);
   const visible = new Set(filtered.slice(first, last).map(file => file.id));
   for (const [id, element] of rendered) if (!visible.has(id)) { element.remove(); rendered.delete(id); }
   for (let i = first; i < last; i++) {
     const file = filtered[i]; let element = rendered.get(file.id);
     if (!element) { element = row(file, i); rendered.set(file.id, element); rows.append(element); }
-    element.style.top = `${i * ROW}px`;
+    element.style.top = `${i * rowHeight}px`;
     element.classList.toggle("active", file.id === active?.id);
     element.classList.toggle("locked", selection.ids.has(file.id));
     element.setAttribute("aria-selected", String(selection.ids.has(file.id)));
@@ -253,7 +255,7 @@ function runLoads() {
 }
 function requestWindow() { clearTimeout(windowTimer); windowTimer = setTimeout(() => void prefetch(), 45); }
 async function prefetch() {
-  const first = Math.floor(list.scrollTop / ROW), last = Math.min(filtered.length, Math.ceil((list.scrollTop + list.clientHeight) / ROW));
+  const first = Math.floor(list.scrollTop / rowHeight), last = Math.min(filtered.length, Math.ceil((list.scrollTop + list.clientHeight) / rowHeight));
   const thumbs = [...filtered.slice(first, last), ...selectedFiles().slice(0, 24)];
   for (let distance = 1; distance <= 50; distance++) { if (filtered[last - 1 + distance]) thumbs.push(filtered[last - 1 + distance]); if (filtered[first - distance]) thumbs.push(filtered[first - distance]); }
   const thumbnails = [...new Map(thumbs.filter(file => file.kind !== "folder").map(file => [file.id, file])).values()];
@@ -272,12 +274,23 @@ function hoverUnderPointer() {
   if (!pointer || selection.ids.size || quicklook.open) return;
   const bounds = list.getBoundingClientRect();
   if (pointer.x < bounds.left || pointer.x >= bounds.right || pointer.y < bounds.top || pointer.y >= bounds.bottom) return;
-  const file = filtered[Math.floor((pointer.y - bounds.top + list.scrollTop) / ROW)]; if (file) setActive(file);
+  const file = filtered[Math.floor((pointer.y - bounds.top + list.scrollTop) / rowHeight)]; if (file) setActive(file);
 }
 list.addEventListener("mousemove", event => { pointer = { x: event.clientX, y: event.clientY }; hoverUnderPointer(); });
 list.addEventListener("mouseleave", () => pointer = undefined);
 list.addEventListener("scroll", () => { $("column-track").style.transform = `translateX(${-list.scrollLeft}px)`; $("context-menu").hidden = true; schedulePaint(); hoverUnderPointer(); requestWindow(); }, { passive: true });
 new ResizeObserver(() => { schedulePaint(); requestWindow(); }).observe(list);
+$("row-height").addEventListener("input", () => {
+  const position = list.scrollTop / rowHeight;
+  rowHeight = Math.max(36, Math.min(120, $<HTMLInputElement>("row-height").valueAsNumber || 56));
+  document.documentElement.style.setProperty("--row", `${rowHeight}px`);
+  $("row-height-value").textContent = `${rowHeight} px`;
+  // Update the scroll extent before restoring the same fractional row position.
+  rows.style.height = `${filtered.length * rowHeight}px`;
+  list.scrollTop = position * rowHeight;
+  pointer = undefined;
+  paint(); requestWindow();
+});
 document.addEventListener("pointermove", event => { if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5) press.moved = true; }, { passive: true });
 document.addEventListener("mousedown", event => {
   const target = event.target as HTMLElement;
@@ -336,8 +349,8 @@ function goUp() { if (root && parent && parent !== root) void openFolder(parent,
 function ensureVisible(file: FileEntry) {
   const index = filtered.findIndex(item => item.id === file.id);
   if (index < 0) return;
-  if (index * ROW < list.scrollTop) list.scrollTop = index * ROW;
-  else if ((index + 1) * ROW > list.scrollTop + list.clientHeight) list.scrollTop = (index + 1) * ROW - list.clientHeight;
+  if (index * rowHeight < list.scrollTop) list.scrollTop = index * rowHeight;
+  else if ((index + 1) * rowHeight > list.scrollTop + list.clientHeight) list.scrollTop = (index + 1) * rowHeight - list.clientHeight;
 }
 $("folder-form").addEventListener("submit", event => { event.preventDefault(); void openFolder(folder.value); });
 $("recursive").addEventListener("change", () => { if (root) void openFolder(root); });

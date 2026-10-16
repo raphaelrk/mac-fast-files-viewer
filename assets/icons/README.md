@@ -1,8 +1,8 @@
 # Fast Files icons
 
-Generated with the built-in image generation tool. Tailwind is the default app icon; Slipstream and Paperstream are alternative proposals. PNG masters retain transparent backgrounds.
+Generated with the built-in image generation tool. Paperstream is the default app icon; Tailwind and Slipstream are alternative proposals. PNG masters retain transparent backgrounds.
 
-Run `bun run build:icon` to regenerate the macOS `icon.iconset` from Tailwind. The packaging command consumes that icon set to create the app's `.icns` resource. No image-processing package is required; the script uses macOS `sips`.
+Run `bun run build:icon` to regenerate the macOS `icon.iconset` from Paperstream. The packaging command consumes that icon set to create the app's `.icns` resource. No image-processing package is required; the script uses macOS `sips`.
 
 ## Generation prompts
 

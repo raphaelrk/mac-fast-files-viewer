@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 
 // Preserve the generated artwork's alpha while producing macOS icon sizes.
-const source = "assets/icons/tailwind.png";
+const source = "assets/icons/paperstream.png";
 await mkdir("icon.iconset", { recursive: true });
 for (const points of [16, 32, 128, 256, 512]) {
   for (const scale of [1, 2]) {
@@ -11,4 +11,4 @@ for (const points of [16, 32, 128, 256, 512]) {
     if (result.exitCode !== 0) throw new Error(`Icon conversion failed: ${result.stderr.toString()}`);
   }
 }
-console.log("Built macOS Tailwind icon set (16–1024 px)");
+console.log("Built macOS Paperstream icon set (16–1024 px)");

@@ -4,7 +4,7 @@ A macOS file viewer for quickly reviewing large archives of images, text, and co
 
 Uses a virtualized list, content thumbnails large enough to skim, and immediate hover previews. The initial desktop target is Electrobun with Bun and the native macOS webview.
 
-The app uses the **Tailwind** icon: a golden folder with an ivory gust of wind on teal. [Icon artwork, alternatives, and generation prompts](assets/icons/README.md) live in the repository. Run `bun run build:icon` to regenerate the macOS icon set after changing its source artwork.
+The app uses the **Paperstream** icon: a cream folder with a blue wind ribbon on periwinkle. [Icon artwork, alternatives, and generation prompts](assets/icons/README.md) live in the repository. Run `bun run build:icon` to regenerate the macOS icon set after changing its source artwork.
 
 ## What works
 
@@ -48,6 +48,8 @@ Hover follows the row under the pointer during scrolling until items are selecte
 **Space** immediately opens or closes an in-app Quick Look overlay, reusing the cached image or thumbnail while a larger preview loads. Use its arrows to browse; Escape also dismisses it. This overlay uses the app's supported image/text previews rather than macOS Quick Look plugins.
 
 Filter names and relative paths; sort using the header buttons or menu by **name, modified, created, added, size, or kind**. Scroll the list horizontally to see additional metadata columns. Date Added and Kind come from native filesystem resource values; unavailable added dates display **—** and sort last. The toolbar opens the current folder in Finder, and each row's context menu offers **Open in Finder** to reveal that item.
+
+The **Row height** slider in the bottom bar adjusts rows from 36 to 120 px (56 px by default), including thumbnail size. Resizing keeps your place in the list. Relative paths appear under filenames only when **Include subfolders** is enabled; dates always stay on one line.
 
 In the desktop app, drag from anywhere on a row to offer the original file or folder through a native macOS file-URL dragging session. Dragging an already-selected row includes the entire selection. It advertises copy/link operations; it does not move or delete source files. This uses a small AppKit bridge loaded into Electrobun. Native file dragging is unavailable in the browser development preview.
 
