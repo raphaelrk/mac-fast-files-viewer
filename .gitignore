@@ -9,4 +9,6 @@ artifacts/
 .env.*
 !.env.example
 coverage/
+dist/
+.cottontail-tmp/
 .notes/

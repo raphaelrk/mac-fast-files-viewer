@@ -1,0 +1,18 @@
+{
+  "name": "mac-fast-files-viewer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun src/server/dev.ts",
+    "build:helper": "mkdir -p .cache && xcrun swiftc -O -module-cache-path .cache/swift-modules native/Thumbnail.swift -o .cache/thumbnail",
+    "test": "bun test",
+    "check": "tsc --noEmit",
+    "benchmark": "bun scripts/benchmark.ts",
+    "build:web": "bun scripts/build-web.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "typescript": "5.9.3"
+  }
+}
