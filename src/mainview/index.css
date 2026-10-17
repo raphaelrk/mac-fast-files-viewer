@@ -6,7 +6,7 @@ button{cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:5px
 button:hover{filter:brightness(1.17)}
 button:disabled{opacity:.5;cursor:default}
 input{min-width:0;background:transparent;color:inherit;border:0;outline:none}
-input:focus-visible,button:focus-visible,select:focus-visible,#list:focus-visible{outline:2px solid #8eb6e2;outline-offset:-2px}
+input:focus-visible,button:focus-visible,select:focus-visible{outline:2px solid #8eb6e2;outline-offset:-2px}
 header{height:46px;flex-shrink:0;padding:0 12px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:8px;flex:1}
 .brand strong{font-size:17px;font-weight:600;letter-spacing:-.6px}
@@ -31,7 +31,7 @@ select{border:1px solid var(--line);border-radius:5px;padding:4px;background:#1b
 .columns{display:grid;grid-template-columns:1fr 135px 75px;align-items:center;padding:0 24px 10px 24px;color:var(--muted);font-size:10px;letter-spacing:1px;border-bottom:1px solid var(--line)}
 .columns select{font-size:11px;letter-spacing:0;border:0;background:transparent;padding:0 10px 0 0}
 .columns span:last-child{text-align:right}
-#list{flex:1;overflow:auto;position:relative;min-height:0;scrollbar-color:#48515f transparent;scrollbar-width:thin}
+#list{outline:none;isolation:isolate;flex:1;overflow:auto;position:relative;min-height:0;scrollbar-color:#48515f transparent;scrollbar-width:thin}
 #rows{position:relative}
 .file-row{position:absolute;left:0;right:0;height:var(--row);display:grid;grid-template-columns:96px minmax(0,1fr) 135px 75px;align-items:center;padding:3px 8px;gap:0;border-bottom:1px solid #232934;cursor:default}
 .file-row.active{background:#27352f;box-shadow:inset 3px 0 0 var(--accent)}

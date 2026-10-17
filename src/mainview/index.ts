@@ -9,6 +9,7 @@ const list = $("list"), rows = $("rows"), folder = $<HTMLInputElement>("folder")
 const quicklook = $<HTMLDialogElement>("quicklook");
 const about = $<HTMLDialogElement>("about"), columnSettings = $<HTMLDialogElement>("column-settings");
 const columnHeader = $("column-header"), columnTrack = $("column-track"), scrollGutter = $("scroll-gutter");
+const initialAbout = new URLSearchParams(location.search).get("about") === "1";
 const token = location.hash.slice(1) || sessionStorage.getItem("fast-files-token") || "";
 sessionStorage.setItem("fast-files-token", token);
 history.replaceState(null, "", location.pathname);
@@ -25,7 +26,14 @@ let columnOrder: ColumnId[] = [...DEFAULT_COLUMNS], draggingColumn: ColumnId | u
 try { const value = JSON.parse(sessionStorage.getItem("fast-files-columns") || "null"); if (validColumns(value)) columnOrder = value; } catch { /* Use the default order for invalid saved preferences. */ }
 const columnHeaders = new Map([...columnTrack.querySelectorAll<HTMLButtonElement>("[data-column]")].map(button => [button.dataset.column as ColumnId, button]));
 const rendered = new Map<string, HTMLElement>(), saved = new Map<string, FileEntry>();
-let saveWork = Promise.resolve();
+let saveWork = Promise.resolve(), pendingSaves = 0, shortlistRevision = -1;
+type ShortlistSnapshot = { revision: number; files: FileEntry[] };
+function syncSaved(snapshot: ShortlistSnapshot) {
+  if (pendingSaves || snapshot.revision < shortlistRevision) return;
+  shortlistRevision = snapshot.revision; saved.clear();
+  for (const file of snapshot.files) saved.set(file.path, file);
+  updateSaved(); applyFilter(false);
+}
 const selectedFiles = () => [...selection.ids].map(id => byId.get(id)).filter((file): file is FileEntry => Boolean(file));
 
 async function api<T = any>(path: string, body?: unknown): Promise<T> {
@@ -138,6 +146,19 @@ for (const side of ["left", "right"]) $(`thumbnails-${side}`).onclick = () => {
 };
 $("about-button").onclick = () => showInfo(about);
 $("about-close").onclick = () => about.close();
+window.addEventListener("fast-files-command", event => {
+  const action = (event as CustomEvent<string>).detail;
+  if (action === "about") { showInfo(about); return; }
+  if (action !== "select-all") return;
+  const target = document.activeElement as HTMLElement | null;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) target.select();
+  else if (target === list || target?.closest("#rows")) selectAllFiles();
+  else document.execCommand("selectAll");
+});
+function selectAllFiles() {
+  selection.ids = new Set(orderedIds); selection.anchor = orderedIds[0]; selectionChanged(active || filtered[0]);
+}
+$("new-window").onclick = () => void api("/api/new-window", {}).catch(error => toast(error.message));
 for (const dialog of [about, columnSettings]) dialog.addEventListener("click", event => {
   if (event.target !== dialog) return;
   const rect = dialog.getBoundingClientRect();
@@ -208,8 +229,15 @@ function toggleSaved() {
   if (!targets.length) return;
   const remove = targets.every(file => saved.has(file.path));
   for (const file of targets) { if (remove) saved.delete(file.path); else saved.set(file.path, file); }
-  const snapshot = [...saved.values()];
-  saveWork = saveWork.then(() => api("/api/shortlist", snapshot)).catch(error => toast(`Could not save shortlist: ${error.message}`));
+  const mutation = { add: remove ? [] : targets.map(file => file.id), remove: remove ? targets.map(file => file.path) : [] };
+  pendingSaves++;
+  saveWork = saveWork.then(async () => {
+    let snapshot: ShortlistSnapshot | undefined;
+    try { snapshot = await api<ShortlistSnapshot>("/api/shortlist/mutate", mutation); }
+    catch (error) { toast(`Could not save shortlist: ${(error as Error).message}`); shortlistRevision = -1; }
+    finally { pendingSaves--; }
+    if (snapshot) syncSaved(snapshot);
+  });
   updateSaved(); applyFilter(false);
 }
 function selectionChanged(preferred?: FileEntry) {
@@ -232,13 +260,14 @@ function row(file: FileEntry, index: number) {
   const thumb = document.createElement("div"); thumb.className = "file-thumbnail"; thumb.dataset.column = "thumbnail"; thumb.append(thumbnail(file));
   element.append(thumb, info);
   for (const [field, value] of [["modified", date(file.modified)], ["created", date(file.created)], ["added", date(file.added)], ["size", file.kind === "folder" ? "—" : size(file.size)], ["kind", file.kindLabel]] as const) {
-    const cell = document.createElement("div"); cell.className = `file-${field}`; cell.dataset.column = field; cell.textContent = value; cell.title = value; element.append(cell);
+    const cell = document.createElement("div"); cell.className = `file-${field}`; cell.dataset.column = field; cell.textContent = value; element.append(cell);
   }
   orderRow(element);
   element.style.top = `${index * rowHeight}px`;
   element.addEventListener("mouseenter", () => { if (!selection.ids.size && !quicklook.open && !draggingColumn) setActive(file); });
   element.addEventListener("pointerdown", event => {
     if (event.button !== 0) return;
+    const startedAt = Date.now();
     clearTextSelection();
     list.focus({ preventScroll: true });
     const modified = event.metaKey || event.ctrlKey || event.shiftKey;
@@ -246,7 +275,7 @@ function row(file: FileEntry, index: number) {
     if (modified) clickFile(file, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey });
     else if (!selection.ids.has(file.id)) clickFile(file);
     // Preserve a selected group until mouse-up, so any selected row drags it.
-    if (nativeDrag) void api("/api/drag", { ids: selection.dragIds(file.id, orderedIds) }).catch(error => toast(error.message));
+    if (nativeDrag) void api("/api/drag", { ids: selection.dragIds(file.id, orderedIds), startedAt }).catch(error => toast(error.message));
   });
   element.addEventListener("mousedown", event => { if (event.button === 0) event.preventDefault(); });
   element.addEventListener("click", event => {
@@ -267,7 +296,6 @@ function row(file: FileEntry, index: number) {
     $<HTMLButtonElement>("context-reveal").disabled = !finderAvailable;
     $("context-reveal").focus({ preventScroll: true });
   });
-  element.title = "Click to select; click the selected row again to release. ⌘-click to toggle; Shift-click for a range. Drag selected items to another app.";
   return element;
 }
 function paint() {
@@ -511,7 +539,7 @@ document.addEventListener("keydown", event => {
   if ((event.metaKey || event.ctrlKey) && event.key === "ArrowUp") { event.preventDefault(); goUp(); return; }
   if (event.key === "Escape") { if (quicklook.open) { event.preventDefault(); closeQuickLook(); } else if (!$("context-menu").hidden) $("context-menu").hidden = true; else clearSelection(); return; }
   if (event.code === "Space") { event.preventDefault(); if (!event.repeat) toggleQuickLook(); return; }
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && (target === list || target.closest("#rows"))) { event.preventDefault(); selection.ids = new Set(orderedIds); selection.anchor = orderedIds[0]; selectionChanged(active || filtered[0]); return; }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && (target === list || target.closest("#rows"))) { event.preventDefault(); selectAllFiles(); return; }
   if (event.key === "s" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); toggleSaved(); }
   if (event.key === "Enter" && active?.kind === "folder") { event.preventDefault(); void openFolder(active.path); return; }
   if (quicklook.open && (event.key === "ArrowLeft" || event.key === "ArrowRight")) { event.preventDefault(); stepQuickLook(event.key === "ArrowLeft" ? -1 : 1); return; }
@@ -525,10 +553,13 @@ document.addEventListener("keydown", event => {
   }
 });
 applyColumnOrder(); updateSaved();
-void api<FileEntry[]>("/api/shortlist").then(items => { for (const file of items) saved.set(file.path, file); updateSaved(); schedulePaint(); }).catch(() => {});
+if (initialAbout) showInfo(about);
+void api<ShortlistSnapshot>("/api/shortlist/state").then(syncSaved).catch(() => {});
 async function poll() {
   try {
     const status = await api("/api/status"); nativePicker = status.nativePicker; nativeDrag = status.nativeDrag; finderAvailable = status.finder;
+    $("new-window").hidden = !status.newWindow;
+    if (!pendingSaves && status.shortlistRevision !== shortlistRevision) syncSaved(await api<ShortlistSnapshot>("/api/shortlist/state"));
     $<HTMLButtonElement>("finder-folder").disabled = !finderAvailable || !root;
     $<HTMLButtonElement>("reveal").disabled = !finderAvailable;
     $("memory").textContent = `${status.queue.active} loading · ${status.queue.queued} queued · ${size(status.queue.cached)} cached`;

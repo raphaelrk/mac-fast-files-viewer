@@ -11,7 +11,9 @@ private final class FileDragSource: NSObject, NSDraggingSource {
 private let dragSource = FileDragSource()
 private var monitor: Any?
 private var armedPaths: [String] = []
-private var targetTitle = "Fast Files"
+private var targetTitle = ""
+private var mouseDownAt: Double = 0
+private var mouseDownWindow: Int?
 private var mouseDownPoint: NSPoint?
 
 @_cdecl("ff_install_file_drag")
@@ -21,12 +23,14 @@ public func installFileDrag() {
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { event in
             if event.type == .leftMouseDown {
                 armedPaths = []
+                mouseDownAt = Date().timeIntervalSince1970 * 1000
+                mouseDownWindow = event.window?.windowNumber
                 mouseDownPoint = event.locationInWindow
             } else if event.type == .leftMouseUp {
                 armedPaths = []
                 mouseDownPoint = nil
             } else if !armedPaths.isEmpty,
-                      let window = event.window, window.title == targetTitle,
+                      let window = event.window, window.title == targetTitle, window.windowNumber == mouseDownWindow,
                       let view = window.contentView, let start = mouseDownPoint,
                       hypot(event.locationInWindow.x - start.x, event.locationInWindow.y - start.y) >= 5 {
                 let paths = armedPaths
@@ -53,10 +57,15 @@ public func installFileDrag() {
 @_cdecl("ff_arm_file_drag")
 public func armFileDrag(_ pathPointer: UnsafePointer<CChar>) {
     let json = String(cString: pathPointer)
-    guard let data = json.data(using: .utf8), let paths = (try? JSONSerialization.jsonObject(with: data)) as? [String], !paths.isEmpty else { return }
+    guard let data = json.data(using: .utf8), let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let paths = request["files"] as? [String], !paths.isEmpty,
+          let title = request["title"] as? String, let startedAt = request["startedAt"] as? Double else { return }
     DispatchQueue.main.async {
         // An HTTP request finishing after mouse-up must not arm the next gesture.
-        guard NSEvent.pressedMouseButtons & 1 != 0, mouseDownPoint != nil else { return }
+        guard NSEvent.pressedMouseButtons & 1 != 0, mouseDownPoint != nil,
+              startedAt >= floor(mouseDownAt),
+              let number = mouseDownWindow, NSApp.window(withWindowNumber: number)?.title == title else { return }
+        targetTitle = title
         armedPaths = paths
     }
 }

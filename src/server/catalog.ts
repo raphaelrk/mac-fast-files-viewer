@@ -11,9 +11,15 @@ export class Catalog {
   byId = new Map<string, FileEntry>();
   status: ScanStatus = { generation: "", root: "", parent: "", count: 0, done: true, skipped: 0 };
   constructor(readonly metadataHelper?: string) {}
+  private disposed = false;
+  dispose() {
+    this.disposed = true; this.files = []; this.byId.clear();
+    this.status = { ...this.status, generation: crypto.randomUUID(), count: 0, done: true };
+  }
   async scan(path: string, recursive = false) {
     const root = await realpath(path);
     if (!(await lstat(root)).isDirectory()) throw new Error("Choose a directory");
+    if (this.disposed) throw new Error("Window closed");
     const generation = crypto.randomUUID();
     this.files = []; this.byId.clear();
     this.status = { generation, root, parent: dirname(root), count: 0, done: false, skipped: 0 };

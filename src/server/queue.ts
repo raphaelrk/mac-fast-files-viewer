@@ -1,13 +1,13 @@
 /** A shared admission budget: queued work does not reserve memory until it runs. */
 export class WorkQueue {
-  private jobs: { key: string; bytes: number; priority: number; run: () => Promise<unknown>; resolve: (value: any) => void; reject: (error: unknown) => void }[] = [];
+  private jobs: { key: string; owner?: string; bytes: number; priority: number; run: () => Promise<unknown>; resolve: (value: any) => void; reject: (error: unknown) => void }[] = [];
   private pending = new Map<string, Promise<any>>();
   activeBytes = 0;
   active = 0;
   constructor(readonly budget = 500 * 1024 ** 2, readonly concurrency = 3) {}
   get queued() { return this.jobs.length; }
 
-  submit<T>(key: string, bytes: number, priority: number, run: () => Promise<T>): Promise<T> {
+  submit<T>(key: string, bytes: number, priority: number, run: () => Promise<T>, owner?: string): Promise<T> {
     if (bytes > this.budget) return Promise.reject(new Error("Image exceeds the processing budget"));
     const existing = this.pending.get(key);
     if (existing) {
@@ -16,15 +16,15 @@ export class WorkQueue {
       return existing;
     }
     const promise = new Promise<T>((resolve, reject) => {
-      this.jobs.push({ key, bytes, priority, run, resolve, reject });
+      this.jobs.push({ key, owner, bytes, priority, run, resolve, reject });
     });
     this.pending.set(key, promise);
     this.pump();
     return promise;
   }
-  cancelQueued(keep: Set<string>) {
+  cancelQueued(keep: Set<string>, owner?: string) {
     this.jobs = this.jobs.filter(job => {
-      if (keep.has(job.key)) return true;
+      if ((owner !== undefined && job.owner !== owner) || keep.has(job.key)) return true;
       this.pending.delete(job.key);
       job.reject(new Error("Superseded"));
       return false;

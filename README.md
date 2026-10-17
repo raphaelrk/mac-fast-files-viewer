@@ -11,7 +11,7 @@ The app uses the **Paperstream** icon: a cream folder with a blue wind ribbon on
 - Index files and folders with names, paths, sizes, modified/created/added dates, and Finder kind descriptions without reading file contents. Start in the current folder; optionally include all subfolders.
 - Render only visible rows; prefetch thumbnails for the viewport plus about 50 files in each direction.
 - Prefetch larger previews up to 20 files before and 20 after the active item, interleaved with thumbnail downloads.
-- Share a bounded, prioritized work queue across thumbnail and preview generation. Skip files over 250 MiB and budget 500 MiB for estimated in-flight image work.
+- Share a bounded, prioritized work queue across thumbnail and preview generation. Skip files over 250 MiB and share a 500 MiB budget for estimated in-flight image work across all windows.
 - Downsample JPEG, PNG, and GIF through macOS ImageIO; show bounded UTF-8 excerpts for text and code.
 - Support pointer hover, stationary-pointer scrolling, keyboard navigation, filtering, and a shortlist export.
 - Save a persistent shortlist and export its paths and metadata as JSON.
@@ -53,18 +53,20 @@ The **Row height** slider in the bottom bar adjusts rows from 36 to 120 px (56 p
 
 Drag column headers to reorder all seven columns, including thumbnails. **Option+←/→** moves a focused header one position. The **Columns** button provides accessible move controls and **Thumbnails left/right** presets. When thumbnails are last, they stay pinned beside the preview while the other columns scroll. Column order is stored in this window's session; reloading another window does not change it.
 
-The **About** button credits the creator, lists shortcuts, and explains supported previews. The native **Fast Files** menu also opens About and provides **Quit Fast Files (⌘Q)**. Quit is an application menu command, not a global shortcut.
+The **About** button credits the creator, lists shortcuts, and explains supported previews. The native **Fast Files** menu also opens About and provides **Quit Fast Files (⌘Q)**. **⌘N** or **New window** opens an independent window; **⌘W** closes the focused window. Closing the last window leaves the app menu available for ⌘N; clicking the Dock icon opens a window again. Quit is an application menu command, not a global shortcut.
 
 In the desktop app, drag from anywhere on a row to offer the original file or folder through a native macOS file-URL dragging session. Dragging an already-selected row includes the entire selection. It advertises copy/link operations; it does not move or delete source files. This uses a small AppKit bridge loaded into Electrobun. Native file dragging is unavailable in the browser development preview.
+
+Windows share a shortlist, using serialized add/remove operations so concurrent edits do not overwrite each other. Updates appear in other windows within two seconds. Folder navigation, selection, filters, row height, column order, and preview caches are independent.
 
 Shortlists persist in `~/Library/Application Support/Fast Files/shortlist.json` for the native app, and `.cache/shortlist.json` for browser development. These contain local file paths. Generated fixtures, caches, and user selections are ignored by Git.
 
 ## Memory and preview limits
 
 - One weighted queue serves both thumbnail and larger-preview jobs, with at most three simultaneous jobs (fewer on small machines).
-- The 500 MiB admission budget estimates each image's source bytes, a worst-case 40 MP bitmap, output/encoding buffers, and helper overhead. This is **not a hard limit on total process RSS**; native codec internals and the webview can allocate additional memory.
+- The app-wide 500 MiB admission budget allows up to three helper jobs and estimates each image's source bytes, a worst-case 40 MP bitmap, output/encoding buffers, and helper overhead. This is **not a hard limit on total process RSS**; native codec internals and the webview can allocate additional memory.
 - Images above 250 MiB or 40 megapixels are skipped. ImageIO downsamples into at most 240 px thumbnails and 1600 px previews before sending them to the webview. GIFs show the first frame.
-- Server encoded assets have a 128 MiB LRU budget; browser decoded assets have a separate 256 MiB LRU budget to retain a larger warm preview window. Browser accounting includes decoded pixel size; eviction releases preload references and blob URLs. The 41-file prefetch window is best effort: unusually large decoded images can be evicted sooner.
+- Each window’s server encoded assets have a 128 MiB LRU budget; its browser decoded assets have a separate 256 MiB LRU budget to retain a larger warm preview window. Browser accounting includes decoded pixel size; eviction releases preload references and blob URLs. The 41-file prefetch window is best effort: unusually large decoded images can be evicted sooner.
 - Native decoders run in separate short-lived processes with a 12-second CPU limit and 15-second wall timeout.
 - Text reads at most 64 KiB. Binary-looking files get a placeholder. HTML and code render as plain text; they are never executed.
 - Metadata indexing streams directories, skips symlinks and `.git`, `node_modules`, `.hutch`, `.cache`, `.notes`, and `.Trash`, and tolerates unreadable entries. Native metadata queries run in batches of at most 512 entries. Indexing is not a live filesystem watch; rescan to refresh changed files.
@@ -95,4 +97,4 @@ Keep personal machine names, absolute workspace paths, local test captures, and 
 
 ## Still ahead
 
-This is an initial working prototype. Real-archive responsiveness and memory profiling, progressive indexing refinements, in-app tuning, animated GIF playback, richer format support, similarity grouping, and direct gallery integration remain future work. [Multiple windows and tabs](docs/multiple-windows.md) are assessed but not implemented. Desktop packaging currently produces a local development build, without distribution signing/notarization.
+This is an initial working prototype. Real-archive responsiveness and memory profiling, progressive indexing refinements, in-app tuning, animated GIF playback, richer format support, similarity grouping, and direct gallery integration remain future work. [Multiple windows](docs/multiple-windows.md) are implemented; tabs remain future work. Desktop packaging currently produces a local development build, without distribution signing/notarization.

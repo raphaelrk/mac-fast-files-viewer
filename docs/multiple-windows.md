@@ -1,28 +1,17 @@
-# Multiple windows and tabs: design assessment
+# Multiple windows
 
-This is a plan, not an implemented feature. Multiple windows are a moderate refactor; tabs add view lifecycle and UI work. Electrobun already exposes [BrowserWindow and BrowserView](https://framework.blackboard.sh/electrobun/apis/browser-view/), so no framework switch is necessary. Native Finder-style window tabbing would need a separate AppKit investigation; app-managed tabs can use independent webviews.
+Each native window owns a separate loopback server and random session token, catalog, scan generation, prefetch revision, browser state, and bounded caches. Opening, rescanning, filtering, or selecting in one window does not change another window. New windows start with no folder open. Column preferences remain local to that window’s session.
 
-## State isolation comes first
+**⌘N** and the **New window** button create a window. **⌘W** closes the focused window. Closing the last window keeps the application menu available; **⌘N** or clicking the Dock icon opens another. **⌘Q** quits the app. Edit commands are native menu accelerators, including **⌘C** for selected path-bar text. About and Select All target the focused window.
 
-Each window or tab needs its own catalog, scan generation, preview-window revision, navigation state, filters, selection/hover, virtualized rows, decoded image cache, and layout preferences. The browser module state is naturally separate in independent webviews, but the current server has one catalog and one preview window: opening another view against that same session would replace the first view's folder and cancel its work.
+All windows share one weighted decoder scheduler: 500 MiB estimated in-flight work and at most three jobs. Jobs carry a window owner, so scrolling or closing one window cancels only its own queued work. Closing a window stops its server, invalidates scans, clears its encoded cache, and terminates its active image helpers. Source images above 250 MiB or 40 megapixels remain excluded.
 
-Introduce explicit view sessions with their own tokens and catalog ownership. Route requests to the correct session and dispose of it when its view closes. Keep column order and other live view preferences separate; only share defaults when that is intentional. Associate native drag requests with the originating window and mouse gesture, rather than relying on a common window title.
+The scheduler is not a hard total-RSS limit. Each window additionally has a 128 MiB encoded cache and a 256 MiB decoded cache, plus its catalog, webview, and native allocations. Overall memory therefore still increases with the number of windows. Shared encoded assets and adaptive per-window cache allowances could be added after profiling.
 
-The shortlist can intentionally be shared. Its current whole-list replacement API would lose concurrent edits, so shared shortlist operations should become add/remove mutations owned by the main process, with updates sent to all views.
+One main-process shortlist store serializes add/remove operations and atomic disk writes. Other windows poll its revision every two seconds. Full-snapshot replacement is disabled for shared native sessions. The shortlist is intentionally shared; selections are not.
 
-## Memory: share expensive work, keep view caches bounded
+Native file drags are tied to the originating window’s unique title and current mouse gesture. A delayed request from another window or an earlier gesture cannot arm a later drag.
 
-Independent budgets would be a reasonable first prototype with a small number of windows, but memory use grows with every view. Each currently has an estimated 500 MiB decoder admission budget, a 128 MiB encoded cache, and a 256 MiB decoded cache, plus webview, catalog, and native allocations. These are not total-RSS limits.
+Tabs are deferred. They can reuse this session ownership model, with additional tab UI, lifecycle management, and suspended prefetch for hidden tabs. Native Finder-style window tabbing would need a separate AppKit investigation.
 
-A shared decoder budget is manageable because a weighted work queue already exists. Inject one scheduler into the per-view preview services, tag jobs with their owner, and cancel only that owner's stale work. The current `cancelQueued(keep)` cannot be used unchanged: one view would cancel another's jobs. Active previews should outrank speculative work; hidden tabs should suspend prefetching, and background windows should not starve indefinitely.
-
-Keep the shared decoder estimate configurable—perhaps modestly above the current single-view budget after profiling—rather than multiplying it by the window count. A shared encoded cache can deduplicate assets by validated file identity, modification time, and preview size. Per-webview decoded caches still need limits; an app-wide scheduler alone cannot cap their combined RSS. A later coordinator can distribute smaller cache allowances to background views.
-
-## Suggested sequence
-
-1. Isolated view sessions and two independent windows; shared decoder scheduler and authoritative shortlist store.
-2. Cleanup, owner-aware cancellation, window-specific native dragging, and foreground/background priorities.
-3. App-managed tabs using the same session abstraction; suspend hidden tab prefetching.
-4. Profile real archives before tuning global and per-view cache allowances.
-
-Verify simultaneous scans in different folders, independent selection and layouts, concurrent shortlist edits, closing a view during decoding, shared-file cache hits, and correct native dragging from each window. Cmd-W should close a window/tab; Cmd-Q should quit the application.
+Integration tests cover independent catalogs and authentication, revision isolation, cross-window drag rejection, owner-specific cancellation, window disposal, concurrent shortlist additions/removals, and persistence after reopening.
