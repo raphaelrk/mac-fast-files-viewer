@@ -45,9 +45,13 @@ Use **↑/↓** to browse from the current preview, **S** to toggle shortlist, *
 
 Hover follows the row under the pointer during scrolling until items are selected. A normal click selects one item, **⌘-click** toggles individual items, and **Shift-click** selects a range. A normal click collapses a group to one item; clicking the sole selected row again releases selection while retaining its hover preview. Use the preview's **×** or Escape to clear all selection and resume hover. **⌘A** selects the filtered list when it has keyboard focus. Scroll in the narrow gutter on the right of the list to keep the current preview steady.
 
-**Space** immediately opens or closes an in-app Quick Look overlay, reusing the cached image or thumbnail while a larger preview loads. Use its arrows to browse; Escape also dismisses it. This overlay uses the app's supported image/text previews rather than macOS Quick Look plugins.
+**Space** immediately opens or closes an in-app Quick Look overlay, reusing the cached image or thumbnail while a larger preview loads. Use its arrows to browse; Escape also dismisses it. It leaves just 6 px around the dialog, a 32 px toolbar, and 2 px of content padding; images scale to fit without cropping. This overlay uses the app's supported image/text previews rather than macOS Quick Look plugins.
 
 Filter names and relative paths; sort using the header buttons or menu by **name, modified, created, added, size, or kind**. Scroll the list horizontally to see additional metadata columns. Date Added and Kind come from native filesystem resource values; unavailable added dates display **—** and sort last. The toolbar opens the current folder in Finder, and each row's context menu offers **Open in Finder** to reveal that item.
+
+Drag the divider between the list and preview to resize the panes. Double-click it to restore the default split. When focused, **←/→** adjusts it (hold **Shift** for larger steps), **Home/End** moves to the limits, and **Enter** resets it. Both panes stay within the window, and the file list keeps its scroll position.
+
+The **Theme** menu offers **Forest**, **Midnight**, **Dusk**, and a light **Paper** palette. Theme and pane split are remembered on reload within each window’s session; changing one window does not change the others.
 
 The **Row height** slider in the bottom bar adjusts rows from 36 to 120 px (56 px by default), including thumbnail size. Resizing keeps your place in the list. Relative paths appear under filenames only when **Include subfolders** is enabled; dates always stay on one line.
 

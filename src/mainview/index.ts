@@ -9,6 +9,68 @@ const list = $("list"), rows = $("rows"), folder = $<HTMLInputElement>("folder")
 const quicklook = $<HTMLDialogElement>("quicklook");
 const about = $<HTMLDialogElement>("about"), columnSettings = $<HTMLDialogElement>("column-settings");
 const columnHeader = $("column-header"), columnTrack = $("column-track"), scrollGutter = $("scroll-gutter");
+const paneDivider = $("pane-divider"), main = document.querySelector("main")!;
+const themePicker = $<HTMLSelectElement>("theme");
+const themes = new Set(["forest", "midnight", "dusk", "paper"]);
+const defaultSplit = 1.12 / 2.12;
+let listFraction = defaultSplit, dividerPointer: number | undefined;
+try {
+  const theme = sessionStorage.getItem("fast-files-theme");
+  if (theme && themes.has(theme)) themePicker.value = theme;
+  const split = Number(sessionStorage.getItem("fast-files-split"));
+  if (Number.isFinite(split) && split > 0 && split < 1) listFraction = split;
+} catch { /* Preferences are optional when storage is unavailable. */ }
+function rememberLayout(key: string, value: string) { try { sessionStorage.setItem(key, value); } catch { /* Keep the live setting. */ } }
+function applyTheme() {
+  document.documentElement.dataset.theme = themePicker.value;
+  rememberLayout("fast-files-theme", themePicker.value);
+}
+themePicker.addEventListener("change", applyTheme);
+applyTheme();
+function splitBounds() {
+  const width = Math.max(1, main.clientWidth - paneDivider.offsetWidth);
+  return { width, min: Math.min(320 / width, .5), max: 1 - Math.min(240 / width, .5) };
+}
+function applySplit() {
+  const { min, max } = splitBounds();
+  const fraction = Math.max(min, Math.min(max, listFraction));
+  main.style.setProperty("--list-fraction", String(fraction));
+  paneDivider.setAttribute("aria-valuemin", String(Math.round(min * 100)));
+  paneDivider.setAttribute("aria-valuemax", String(Math.round(max * 100)));
+  paneDivider.setAttribute("aria-valuenow", String(Math.round(fraction * 100)));
+  paneDivider.setAttribute("aria-valuetext", `${Math.round(fraction * 100)}% file list, ${Math.round((1 - fraction) * 100)}% preview`);
+}
+function moveDivider(clientX: number) {
+  const { width, min, max } = splitBounds(), bounds = main.getBoundingClientRect();
+  listFraction = Math.max(min, Math.min(max, (clientX - bounds.left - paneDivider.offsetWidth / 2) / width));
+  applySplit();
+}
+paneDivider.addEventListener("pointerdown", event => {
+  if (event.button !== 0 || dividerPointer !== undefined) return;
+  event.preventDefault(); pointer = undefined; press = undefined; clearTextSelection();
+  paneDivider.focus({ preventScroll: true }); dividerPointer = event.pointerId;
+  paneDivider.setPointerCapture(event.pointerId); document.body.classList.add("resizing-panes");
+});
+paneDivider.addEventListener("pointermove", event => { if (event.pointerId === dividerPointer) moveDivider(event.clientX); });
+function finishDivider(event: PointerEvent) {
+  if (event.pointerId !== dividerPointer) return;
+  dividerPointer = undefined; document.body.classList.remove("resizing-panes");
+  if (paneDivider.hasPointerCapture(event.pointerId)) paneDivider.releasePointerCapture(event.pointerId);
+  rememberLayout("fast-files-split", String(listFraction));
+}
+for (const name of ["pointerup", "pointercancel", "lostpointercapture"] as const) paneDivider.addEventListener(name, finishDivider);
+paneDivider.addEventListener("dblclick", () => { listFraction = defaultSplit; applySplit(); rememberLayout("fast-files-split", String(listFraction)); });
+paneDivider.addEventListener("keydown", event => {
+  const direction = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
+  if (!direction && !["Home", "End", "Enter"].includes(event.key)) return;
+  event.preventDefault(); event.stopPropagation(); pointer = undefined;
+  const { min, max } = splitBounds();
+  const current = Number(main.style.getPropertyValue("--list-fraction")) || defaultSplit;
+  listFraction = event.key === "Home" ? min : event.key === "End" ? max : event.key === "Enter" ? defaultSplit : Math.max(min, Math.min(max, current + direction * (event.shiftKey ? .1 : .02)));
+  applySplit(); rememberLayout("fast-files-split", String(listFraction));
+});
+new ResizeObserver(applySplit).observe(main);
+applySplit();
 const initialAbout = new URLSearchParams(location.search).get("about") === "1";
 const token = location.hash.slice(1) || sessionStorage.getItem("fast-files-token") || "";
 sessionStorage.setItem("fast-files-token", token);
