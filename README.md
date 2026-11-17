@@ -6,6 +6,14 @@ Uses a virtualized list, content thumbnails large enough to skim, and immediate 
 
 The app uses the **Paperstream** icon: a cream folder with a blue wind ribbon on periwinkle. [Icon artwork, alternatives, and generation prompts](assets/icons/README.md) live in the repository. Run `bun run build:icon` to regenerate the macOS icon set after changing its source artwork.
 
+![Fast Files browsing a folder of images, with a hover preview](docs/screenshots/fast-files-forest.png)
+
+| Text preview (Paper theme) | Quick Look overlay |
+|---|---|
+| ![](docs/screenshots/fast-files-paper-text.png) | ![](docs/screenshots/fast-files-quicklook.png) |
+
+*Screenshots use a generated sample folder, not real files.*
+
 ## What works
 
 - Index files and folders with names, paths, sizes, modified/created/added dates, and Finder kind descriptions without reading file contents. Start in the current folder; optionally include all subfolders.
@@ -102,3 +110,7 @@ Keep personal machine names, absolute workspace paths, local test captures, and 
 ## Still ahead
 
 This is an initial working prototype. Real-archive responsiveness and memory profiling, progressive indexing refinements, in-app tuning, animated GIF playback, richer format support, similarity grouping, and direct gallery integration remain future work. [Multiple windows](docs/multiple-windows.md) are implemented; tabs remain future work. Desktop packaging currently produces a local development build, without distribution signing/notarization.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
